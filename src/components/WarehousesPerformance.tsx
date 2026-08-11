@@ -5,7 +5,9 @@ import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Download, Settings2, RotateCcw, Warehouse } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Download, Settings2, RotateCcw, Warehouse, HelpCircle } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Props {
@@ -24,6 +26,16 @@ interface PerformanceWeights {
   nmvPct: number;
   productivity: number;
   deficits: number;
+}
+
+interface PerformanceTargets {
+  nmvPct: number;
+  avgValue: number;
+  avgOrders: number;
+  avgWeight: number;
+  ordersPerHour: number;
+  weightPerHour: number;
+  maxDeficit: number;
 }
 
 const fmtNum = (v: number, maxDigits: number = 1) => {
@@ -57,7 +69,18 @@ const DEFAULT_WEIGHTS: PerformanceWeights = {
   deficits: 20,
 };
 
+const DEFAULT_TARGETS: PerformanceTargets = {
+  nmvPct: 0,
+  avgValue: 0,
+  avgOrders: 0,
+  avgWeight: 0,
+  ordersPerHour: 0,
+  weightPerHour: 0,
+  maxDeficit: 0,
+};
+
 const WEIGHTS_KEY = 'warehouse-perf-weights-v3';
+const TARGETS_KEY = 'warehouse-perf-targets-v1';
 
 function defaultRange() {
   const now = new Date();
@@ -78,6 +101,7 @@ export default function WarehousesPerformance({
   const def = defaultRange();
   const [fromDate, setFromDate] = useState<Date | undefined>(def.from);
   const [toDate, setToDate] = useState<Date | undefined>(def.to);
+
   const [weights, setWeights] = useState<PerformanceWeights>(() => {
     try {
       const raw = localStorage.getItem(WEIGHTS_KEY);
@@ -90,10 +114,23 @@ export default function WarehousesPerformance({
     } catch { /* ignore */ }
     return DEFAULT_WEIGHTS;
   });
-  const [draft, setDraft] = useState<PerformanceWeights>(weights);
+
+  const [targets, setTargets] = useState<PerformanceTargets>(() => {
+    try {
+      const raw = localStorage.getItem(TARGETS_KEY);
+      if (raw) {
+        return { ...DEFAULT_TARGETS, ...JSON.parse(raw) };
+      }
+    } catch { /* ignore */ }
+    return DEFAULT_TARGETS;
+  });
+
+  const [draftWeights, setDraftWeights] = useState<PerformanceWeights>(weights);
+  const [draftTargets, setDraftTargets] = useState<PerformanceTargets>(targets);
   const [open, setOpen] = useState(false);
 
   useEffect(() => { localStorage.setItem(WEIGHTS_KEY, JSON.stringify(weights)); }, [weights]);
+  useEffect(() => { localStorage.setItem(TARGETS_KEY, JSON.stringify(targets)); }, [targets]);
 
   const inRange = (value: string) => {
     if (!value) return false;
@@ -111,7 +148,6 @@ export default function WarehousesPerformance({
   };
 
   const rows = useMemo(() => {
-    // Aggregate salary data & Fleet Operation data per warehouse
     const agg = new Map<string, {
       orders: number;
       weight: number;
@@ -177,7 +213,6 @@ export default function WarehousesPerformance({
         }
       });
     } else {
-      // Fallback: use reconData for NMV and onDemandData for OFD
       reconData.forEach(r => {
         const wh = normalizeWarehouse((r.WAREHOUSE || r._col4 || '').trim());
         const date = r.DELIVERY_DATE || r._col5 || '';
@@ -241,17 +276,11 @@ export default function WarehousesPerformance({
         const hasRunSheets = a.runSheets > 0;
         const totalDeficit = (a.pendingDeficit || 0) + (a.damageDeficit || 0) + (a.extraDeficit || 0);
         const values: Record<FactorKey, number> = {
-          // 1. NMV% = (∑ NMV / ∑ OFD_VALUE) * 100
           nmvPct: safeDiv(a.nmv, a.ofd) * 100,
-          // 2. Avg Value = ∑ OFD_VALUE / Run Sheets
           avgValue: hasRunSheets ? safeDiv(a.ofd, a.runSheets) : safeDiv(a.nmv, a.orders),
-          // 3. Avg Orders = ∑ OFD_ORDERS / Run Sheets
           avgOrders: hasRunSheets ? safeDiv(a.ofdOrders, a.runSheets) : safeDiv(a.orders, a.days),
-          // 4. Avg Weight = ∑ WEIGHT / Run Sheets
           avgWeight: hasRunSheets ? safeDiv(a.fleetWeight, a.runSheets) : safeDiv(a.weight, a.days),
-          // 5. Orders/Hour = ∑ OFD_ORDERS / ∑ TRIP_TIME_HRS
           ordersPerHour: safeDiv(a.ofdOrders, a.tripTimeHrs),
-          // 6. Weight/Hour = ∑ WEIGHT / ∑ TRIP_TIME_HRS
           weightPerHour: safeDiv(a.fleetWeight, a.tripTimeHrs),
         };
         return {
@@ -271,46 +300,125 @@ export default function WarehousesPerformance({
         };
       });
 
-    // Normalize each factor against the best performer (0-100)
-    const max: Record<FactorKey, number> = {} as Record<FactorKey, number>;
-    FACTORS.forEach(f => { max[f.key] = Math.max(0, ...base.map(b => b.values[f.key])); });
-    const maxTotalDeficit = Math.max(0, ...base.map(b => b.totalDeficit));
+    // Dynamic Max values across all warehouses
+    const dynamicMax: Record<FactorKey, { value: number; topWh: string }> = {} as any;
+    FACTORS.forEach(f => {
+      let topVal = 0;
+      let topWh = '';
+      base.forEach(b => {
+        if (b.values[f.key] > topVal) {
+          topVal = b.values[f.key];
+          topWh = b.warehouse;
+        }
+      });
+      dynamicMax[f.key] = { value: topVal, topWh };
+    });
+
+    const maxPending = Math.max(0, ...base.map(b => b.pendingDeficit));
+    const maxDamage = Math.max(0, ...base.map(b => b.damageDeficit));
+    const maxExtra = Math.max(0, ...base.map(b => b.extraDeficit));
+    const dynamicMaxTotalDeficit = Math.max(0, ...base.map(b => b.totalDeficit));
+
+    // Active Benchmarks (Manual target if set > 0, otherwise dynamic max)
+    const benchmark: Record<FactorKey, { value: number; isManual: boolean; label: string }> = {
+      nmvPct: {
+        value: targets.nmvPct > 0 ? targets.nmvPct : dynamicMax.nmvPct.value,
+        isManual: targets.nmvPct > 0,
+        label: targets.nmvPct > 0 ? `Target: ${targets.nmvPct}%` : `Top (${dynamicMax.nmvPct.topWh}): ${dynamicMax.nmvPct.value.toFixed(1)}%`,
+      },
+      avgValue: {
+        value: targets.avgValue > 0 ? targets.avgValue : dynamicMax.avgValue.value,
+        isManual: targets.avgValue > 0,
+        label: targets.avgValue > 0 ? `Target: ${targets.avgValue.toLocaleString()} EGP` : `Top (${dynamicMax.avgValue.topWh}): ${dynamicMax.avgValue.value.toLocaleString()} EGP`,
+      },
+      avgOrders: {
+        value: targets.avgOrders > 0 ? targets.avgOrders : dynamicMax.avgOrders.value,
+        isManual: targets.avgOrders > 0,
+        label: targets.avgOrders > 0 ? `Target: ${targets.avgOrders} orders` : `Top (${dynamicMax.avgOrders.topWh}): ${dynamicMax.avgOrders.value.toFixed(2)} orders`,
+      },
+      avgWeight: {
+        value: targets.avgWeight > 0 ? targets.avgWeight : dynamicMax.avgWeight.value,
+        isManual: targets.avgWeight > 0,
+        label: targets.avgWeight > 0 ? `Target: ${targets.avgWeight.toLocaleString()} KG` : `Top (${dynamicMax.avgWeight.topWh}): ${dynamicMax.avgWeight.value.toLocaleString()} KG`,
+      },
+      ordersPerHour: {
+        value: targets.ordersPerHour > 0 ? targets.ordersPerHour : dynamicMax.ordersPerHour.value,
+        isManual: targets.ordersPerHour > 0,
+        label: targets.ordersPerHour > 0 ? `Target: ${targets.ordersPerHour} / hr` : `Top (${dynamicMax.ordersPerHour.topWh}): ${dynamicMax.ordersPerHour.value.toFixed(2)} / hr`,
+      },
+      weightPerHour: {
+        value: targets.weightPerHour > 0 ? targets.weightPerHour : dynamicMax.weightPerHour.value,
+        isManual: targets.weightPerHour > 0,
+        label: targets.weightPerHour > 0 ? `Target: ${targets.weightPerHour} KG / hr` : `Top (${dynamicMax.weightPerHour.topWh}): ${dynamicMax.weightPerHour.value.toFixed(1)} KG / hr`,
+      },
+    };
+
+    const benchmarkMaxDeficit = targets.maxDeficit > 0 ? targets.maxDeficit : dynamicMaxTotalDeficit;
     const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) + (weights.deficits || 0) || 1;
 
     return base
       .map(b => {
         // NMV% normalized score (0-100)
-        const nmvNorm = max.nmvPct > 0 ? (b.values.nmvPct / max.nmvPct) * 100 : 0;
-        // Productivity average normalized score (0-100) across all 5 productivity factors
-        const prodNormSum = PRODUCTIVITY_FACTORS.reduce((sum, f) => {
-          const norm = max[f.key] > 0 ? (b.values[f.key] / max[f.key]) * 100 : 0;
-          return sum + norm;
-        }, 0);
+        const nmvNorm = benchmark.nmvPct.value > 0 ? Math.min(100, (b.values.nmvPct / benchmark.nmvPct.value) * 100) : 0;
+
+        // Productivity normalized scores
+        const scores: Record<FactorKey, number> = {
+          nmvPct: safeDiv(nmvNorm, 1),
+          avgValue: benchmark.avgValue.value > 0 ? safeDiv(Math.min(100, (b.values.avgValue / benchmark.avgValue.value) * 100), 1) : 0,
+          avgOrders: benchmark.avgOrders.value > 0 ? safeDiv(Math.min(100, (b.values.avgOrders / benchmark.avgOrders.value) * 100), 1) : 0,
+          avgWeight: benchmark.avgWeight.value > 0 ? safeDiv(Math.min(100, (b.values.avgWeight / benchmark.avgWeight.value) * 100), 1) : 0,
+          ordersPerHour: benchmark.ordersPerHour.value > 0 ? safeDiv(Math.min(100, (b.values.ordersPerHour / benchmark.ordersPerHour.value) * 100), 1) : 0,
+          weightPerHour: benchmark.weightPerHour.value > 0 ? safeDiv(Math.min(100, (b.values.weightPerHour / benchmark.weightPerHour.value) * 100), 1) : 0,
+        };
+
+        const prodNormSum = PRODUCTIVITY_FACTORS.reduce((sum, f) => sum + scores[f.key], 0);
         const prodNormAvg = prodNormSum / PRODUCTIVITY_FACTORS.length;
 
-        // Deficit score: lower deficit is better (100 for 0 deficit, scales down to 0 for highest deficit)
-        const deficitScore = maxTotalDeficit > 0 ? Math.max(0, (1 - (b.totalDeficit / maxTotalDeficit)) * 100) : 100;
+        // Individual deficit scores (0-100 where 0 deficit = 100%)
+        const pendingScore = maxPending > 0 ? Math.max(0, (1 - (b.pendingDeficit / maxPending)) * 100) : 100;
+        const damageScore = maxDamage > 0 ? Math.max(0, (1 - (b.damageDeficit / maxDamage)) * 100) : 100;
+        const extraScore = maxExtra > 0 ? Math.max(0, (1 - (b.extraDeficit / maxExtra)) * 100) : 100;
+
+        // Deficit total pool score: lower deficit is better (100 for 0 deficit, scales down to 0 for highest deficit)
+        const deficitScore = benchmarkMaxDeficit > 0 ? Math.max(0, (1 - (b.totalDeficit / benchmarkMaxDeficit)) * 100) : 100;
+
+        // Points earned from each category
+        const nmvPoints = (nmvNorm * ((weights.nmvPct || 0) / totalWeight));
+        const prodPoints = (prodNormAvg * ((weights.productivity || 0) / totalWeight));
+        const defPoints = (deficitScore * ((weights.deficits || 0) / totalWeight));
 
         // Unified score: NMV% weight + Productivity weight + Deficits weight
-        const score = (nmvNorm * ((weights.nmvPct || 0) / totalWeight)) +
-                      (prodNormAvg * ((weights.productivity || 0) / totalWeight)) +
-                      (deficitScore * ((weights.deficits || 0) / totalWeight));
+        const score = nmvPoints + prodPoints + defPoints;
 
-        return { ...b, score: safeDiv(score, 1) };
+        return {
+          ...b,
+          score: safeDiv(score, 1),
+          scores,
+          deficitScore: safeDiv(deficitScore, 1),
+          pendingScore: safeDiv(pendingScore, 1),
+          damageScore: safeDiv(damageScore, 1),
+          extraScore: safeDiv(extraScore, 1),
+          nmvPoints: safeDiv(nmvPoints, 1),
+          prodPoints: safeDiv(prodPoints, 1),
+          defPoints: safeDiv(defPoints, 1),
+          benchmark,
+          benchmarkMaxDeficit,
+        };
       })
       .sort((a, b) => b.score - a.score);
-  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, fromDate, toDate, weights]);
+  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, fromDate, toDate, weights, targets]);
 
-  const draftTotal = (draft.nmvPct || 0) + (draft.productivity || 0) + (draft.deficits || 0);
+  const draftTotal = (draftWeights.nmvPct || 0) + (draftWeights.productivity || 0) + (draftWeights.deficits || 0);
 
   const handleSave = () => {
     if (Math.round(draftTotal) !== 100) {
       toast.error(`Weights must total 100% — currently ${draftTotal.toFixed(0)}%`);
       return;
     }
-    setWeights(draft);
+    setWeights(draftWeights);
+    setTargets(draftTargets);
     setOpen(false);
-    toast.success('Weights updated');
+    toast.success('Weights & Benchmarks updated successfully');
   };
 
   const handleExport = () => {
@@ -326,15 +434,25 @@ export default function WarehousesPerformance({
         NMV: +r.nmv.toFixed(2),
         'OFD Value': +r.ofd.toFixed(2),
         'NMV%': +r.values.nmvPct.toFixed(2),
+        'NMV% Score': +r.scores.nmvPct.toFixed(1),
         'Avg Value': +r.values.avgValue.toFixed(2),
+        'Avg Value Score': +r.scores.avgValue.toFixed(1),
         'Avg Orders': +r.values.avgOrders.toFixed(2),
+        'Avg Orders Score': +r.scores.avgOrders.toFixed(1),
         'Avg Weight': +r.values.avgWeight.toFixed(2),
+        'Avg Weight Score': +r.scores.avgWeight.toFixed(1),
         'Orders/Hour': +r.values.ordersPerHour.toFixed(2),
+        'Orders/Hour Score': +r.scores.ordersPerHour.toFixed(1),
         'Weight/Hour': +r.values.weightPerHour.toFixed(2),
+        'Weight/Hour Score': +r.scores.weightPerHour.toFixed(1),
         'Pending Deficit': +r.pendingDeficit.toFixed(2),
+        'Pending Score': +r.pendingScore.toFixed(1),
         'Damage Deficit': +r.damageDeficit.toFixed(2),
+        'Damage Score': +r.damageScore.toFixed(1),
         'Extra Deficit': +r.extraDeficit.toFixed(2),
+        'Extra Score': +r.extraScore.toFixed(1),
         'Total Deficit': +r.totalDeficit.toFixed(2),
+        'Deficit Pool Score': +r.deficitScore.toFixed(1),
         'Total Performance %': +r.score.toFixed(2),
       })),
       'Warehouses_Performance'
@@ -345,162 +463,372 @@ export default function WarehousesPerformance({
     s >= 75 ? 'bg-success/15 text-success' : s >= 50 ? 'bg-info/15 text-info' : s >= 30 ? 'bg-warning/15 text-warning' : 'bg-destructive/15 text-destructive';
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3 justify-between">
-        <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
-        <div className="flex items-center gap-2">
-          <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) setDraft(weights); }}>
-            <DialogTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Settings2 className="h-4 w-4 mr-1" /> Weights
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Performance Weights</DialogTitle>
-                <DialogDescription>Set the relative weights for NMV%, Productivity, and Deficits. The total must equal 100%.</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <label className="flex-1 text-sm font-medium">NMV%</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={draft.nmvPct}
-                    onChange={e => setDraft({ ...draft, nmvPct: Math.max(0, parseFloat(e.target.value) || 0) })}
-                    className="h-9 w-24"
-                  />
-                  <span className="text-sm text-muted-foreground">%</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="flex-1 text-sm font-medium">Productivity</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={draft.productivity}
-                    onChange={e => setDraft({ ...draft, productivity: Math.max(0, parseFloat(e.target.value) || 0) })}
-                    className="h-9 w-24"
-                  />
-                  <span className="text-sm text-muted-foreground">%</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="flex-1 text-sm font-medium">Deficits</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={draft.deficits}
-                    onChange={e => setDraft({ ...draft, deficits: Math.max(0, parseFloat(e.target.value) || 0) })}
-                    className="h-9 w-24"
-                  />
-                  <span className="text-sm text-muted-foreground">%</span>
-                </div>
-                <div className={`text-sm font-semibold ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
-                  Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '' : '(must be 100%)'}
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="ghost" size="sm" onClick={() => setDraft(DEFAULT_WEIGHTS)}>
-                  <RotateCcw className="h-4 w-4 mr-1" /> Reset
+    <TooltipProvider delayDuration={150}>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3 justify-between">
+          <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
+          <div className="flex items-center gap-2">
+            <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) { setDraftWeights(weights); setDraftTargets(targets); } }}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Settings2 className="h-4 w-4 mr-1" /> Weights & Benchmarks
                 </Button>
-                <Button size="sm" onClick={handleSave}>Save</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length}>
-            <Download className="h-4 w-4 mr-1" /> Export Excel
-          </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Performance Weights & Target Benchmarks</DialogTitle>
+                  <DialogDescription>Configure category weights (%) and optional manual benchmark targets.</DialogDescription>
+                </DialogHeader>
+
+                <Tabs defaultValue="weights" className="w-full mt-2">
+                  <TabsList className="grid grid-cols-2 w-full">
+                    <TabsTrigger value="weights">Category Weights (%)</TabsTrigger>
+                    <TabsTrigger value="benchmarks">Manual Benchmarks</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="weights" className="space-y-3 pt-3">
+                    <div className="flex items-center gap-3">
+                      <label className="flex-1 text-sm font-medium">NMV% Weight</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={draftWeights.nmvPct}
+                        onChange={e => setDraftWeights({ ...draftWeights, nmvPct: Math.max(0, parseFloat(e.target.value) || 0) })}
+                        className="h-9 w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">%</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex-1 text-sm font-medium">Productivity Weight</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={draftWeights.productivity}
+                        onChange={e => setDraftWeights({ ...draftWeights, productivity: Math.max(0, parseFloat(e.target.value) || 0) })}
+                        className="h-9 w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">%</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex-1 text-sm font-medium">Deficits Weight</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={draftWeights.deficits}
+                        onChange={e => setDraftWeights({ ...draftWeights, deficits: Math.max(0, parseFloat(e.target.value) || 0) })}
+                        className="h-9 w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">%</span>
+                    </div>
+                    <div className={`text-sm font-semibold pt-2 border-t ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
+                      Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '✓' : '(must equal 100%)'}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="benchmarks" className="space-y-3 pt-3">
+                    <p className="text-xs text-muted-foreground bg-muted/60 p-2.5 rounded-md leading-relaxed">
+                      💡 <strong>اختياري:</strong> يمكنك تحديد مستهدف رقمي (Target). إذا تركت القيمة <strong>0 أو فارغة</strong>، سيعتمد النظام تلقائياً على أداء أعلى مخزن في نفس الفترة.
+                    </p>
+                    <div className="space-y-2.5">
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target Avg Value (EGP)</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max)"
+                          value={draftTargets.avgValue || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, avgValue: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target Avg Orders (Orders/RunSheet)</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max)"
+                          value={draftTargets.avgOrders || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, avgOrders: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target Avg Weight (KG/RunSheet)</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max)"
+                          value={draftTargets.avgWeight || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, avgWeight: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target Orders / Hour</label>
+                        <Input
+                          type="number"
+                          step={0.1}
+                          placeholder="Auto (Max)"
+                          value={draftTargets.ordersPerHour || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, ordersPerHour: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target Weight / Hour (KG/hr)</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max)"
+                          value={draftTargets.weightPerHour || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, weightPerHour: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Target NMV%</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max)"
+                          value={draftTargets.nmvPct || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, nmvPct: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex-1 text-xs font-medium">Max Deficit Tolerance (EGP)</label>
+                        <Input
+                          type="number"
+                          placeholder="Auto (Max Deficit)"
+                          value={draftTargets.maxDeficit || ''}
+                          onChange={e => setDraftTargets({ ...draftTargets, maxDeficit: parseFloat(e.target.value) || 0 })}
+                          className="h-8 w-28 text-xs"
+                        />
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+
+                <DialogFooter className="mt-3">
+                  <Button variant="ghost" size="sm" onClick={() => { setDraftWeights(DEFAULT_WEIGHTS); setDraftTargets(DEFAULT_TARGETS); }}>
+                    <RotateCcw className="h-4 w-4 mr-1" /> Reset All
+                  </Button>
+                  <Button size="sm" onClick={handleSave}>Save Settings</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length}>
+              <Download className="h-4 w-4 mr-1" /> Export Excel
+            </Button>
+          </div>
         </div>
-      </div>
 
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Warehouse className="h-4 w-4" />
-        <span>{rows.length} warehouses</span>
-        <span className="opacity-60">
-          | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}% · Deficits {weights.deficits}%
-        </span>
-      </div>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Warehouse className="h-4 w-4" />
+          <span>{rows.length} warehouses</span>
+          <span className="opacity-60">
+            | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}% · Deficits {weights.deficits}%
+          </span>
+        </div>
 
-      <div className="border rounded-lg overflow-auto max-h-[72vh]">
-        <table className="text-sm w-max min-w-full">
-          <thead className="sticky top-0 z-20">
-            <tr>
-              <th rowSpan={2} className="table-header-cell sticky left-0 z-30 min-w-[60px] text-center">#</th>
-              <th rowSpan={2} className="table-header-cell sticky left-[60px] z-30 min-w-[220px] text-left">Warehouse</th>
-              <th rowSpan={2} className="table-header-cell text-center min-w-[120px]">
-                {NMV_FACTOR.label}
-                <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
-              </th>
-              <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
-                Productivity
-                <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
-              </th>
-              <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
-                Deficits
-                <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
-              </th>
-              <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
-            </tr>
-            <tr>
-              {PRODUCTIVITY_FACTORS.map((f, idx) => (
-                <th
-                  key={f.key}
-                  className={`table-header-cell text-center min-w-[120px] ${
-                    idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-primary-foreground/40' : ''
-                  }`}
-                >
-                  {f.label}
+        <div className="border rounded-lg overflow-auto max-h-[72vh]">
+          <table className="text-sm w-max min-w-full">
+            <thead className="sticky top-0 z-20">
+              <tr>
+                <th rowSpan={2} className="table-header-cell sticky left-0 z-30 min-w-[60px] text-center">#</th>
+                <th rowSpan={2} className="table-header-cell sticky left-[60px] z-30 min-w-[220px] text-left">Warehouse</th>
+                <th rowSpan={2} className="table-header-cell text-center min-w-[130px]">
+                  {NMV_FACTOR.label}
+                  <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
                 </th>
-              ))}
-              <th className="table-header-cell text-center min-w-[130px]">Pending Deficit</th>
-              <th className="table-header-cell text-center min-w-[130px]">Damage Deficit</th>
-              <th className="table-header-cell text-center min-w-[130px] border-r-2 border-primary-foreground/40">Extra Deficit</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={r.warehouse} className="hover:bg-muted/50">
-                <td className="table-cell sticky left-0 bg-card z-10 text-center font-medium">{i + 1}</td>
-                <td className="table-cell sticky left-[60px] bg-card z-10 font-medium">{r.warehouse}</td>
-                <td className="table-cell text-center">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</td>
+                <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
+                  Productivity
+                  <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
+                </th>
+                <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
+                  Deficits
+                  <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
+                </th>
+                <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
+              </tr>
+              <tr>
                 {PRODUCTIVITY_FACTORS.map((f, idx) => (
-                  <td
+                  <th
                     key={f.key}
-                    className={`table-cell text-center ${
-                      idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-border/80' : ''
+                    className={`table-header-cell text-center min-w-[125px] ${
+                      idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-primary-foreground/40' : ''
                     }`}
                   >
-                    {f.fmt(r.values[f.key])}
-                  </td>
+                    {f.label}
+                    <span className="block text-[10px] font-normal opacity-70">
+                      {(weights.productivity / PRODUCTIVITY_FACTORS.length).toFixed(1)}%
+                    </span>
+                  </th>
                 ))}
-                <td className="table-cell text-right font-medium text-amber-600 dark:text-amber-400">
-                  {r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                </td>
-                <td className="table-cell text-right font-medium text-rose-600 dark:text-rose-400">
-                  {r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                </td>
-                <td className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80">
-                  {r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                </td>
-                <td className="table-cell text-center">
-                  <span className={`inline-block px-2 py-0.5 rounded font-semibold ${scoreColor(r.score)}`}>
-                    {r.score.toFixed(1)}%
-                  </span>
-                </td>
+                <th className="table-header-cell text-center min-w-[135px]">
+                  Pending Deficit
+                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+                </th>
+                <th className="table-header-cell text-center min-w-[135px]">
+                  Damage Deficit
+                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+                </th>
+                <th className="table-header-cell text-center min-w-[135px] border-r-2 border-primary-foreground/40">
+                  Extra Deficit
+                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+                </th>
               </tr>
-            ))}
-            {!rows.length && (
-              <tr>
-                <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1} className="table-cell text-center text-muted-foreground py-8">
-                  No warehouse data for the selected period
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const prodWeightPerFactor = weights.productivity / PRODUCTIVITY_FACTORS.length;
+                return (
+                  <tr key={r.warehouse} className="hover:bg-muted/50">
+                    <td className="table-cell sticky left-0 bg-card z-10 text-center font-medium">{i + 1}</td>
+                    <td className="table-cell sticky left-[60px] bg-card z-10 font-medium">{r.warehouse}</td>
+
+                    {/* NMV% Cell with Tooltip */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span className="font-medium text-foreground">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</span>
+                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                            ({r.scores[NMV_FACTOR.key].toFixed(1)}%)
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                        <div className="font-bold text-primary border-b pb-1">NMV% • {r.warehouse}</div>
+                        <div><strong>Actual Value:</strong> {r.values.nmvPct.toFixed(2)}% ({r.nmv.toLocaleString()} EGP NMV ÷ {r.ofd.toLocaleString()} EGP OFD)</div>
+                        <div><strong>Benchmark ({r.benchmark.nmvPct.isManual ? 'Manual Target' : 'Top Warehouse'}):</strong> {r.benchmark.nmvPct.label}</div>
+                        <div><strong>Factor Score:</strong> ({r.values.nmvPct.toFixed(2)}% ÷ {r.benchmark.nmvPct.value.toFixed(1)}%) × 100 = <strong>{r.scores.nmvPct.toFixed(1)}%</strong></div>
+                        <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {r.scores.nmvPct.toFixed(1)}% × {weights.nmvPct}% Weight = +{r.nmvPoints.toFixed(2)} pts</div>
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Productivity Cells with Tooltips */}
+                    {PRODUCTIVITY_FACTORS.map((f, idx) => {
+                      const factorScore = r.scores[f.key];
+                      const factorPts = (factorScore * (prodWeightPerFactor / 100));
+                      let formulaText = '';
+                      if (f.key === 'avgValue') formulaText = `${r.ofd.toLocaleString()} EGP OFD ÷ ${r.runSheets} Run Sheets = ${r.values.avgValue.toLocaleString()} EGP`;
+                      else if (f.key === 'avgOrders') formulaText = `${r.orders.toLocaleString()} OFD Orders ÷ ${r.runSheets} Run Sheets = ${r.values.avgOrders.toFixed(2)} Orders`;
+                      else if (f.key === 'avgWeight') formulaText = `${r.weight.toLocaleString()} KG Weight ÷ ${r.runSheets} Run Sheets = ${r.values.avgWeight.toLocaleString()} KG`;
+                      else if (f.key === 'ordersPerHour') formulaText = `${r.orders.toLocaleString()} OFD Orders ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.ordersPerHour.toFixed(2)} Orders/hr`;
+                      else if (f.key === 'weightPerHour') formulaText = `${r.weight.toLocaleString()} KG Weight ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.weightPerHour.toFixed(1)} KG/hr`;
+
+                      return (
+                        <Tooltip key={f.key}>
+                          <TooltipTrigger asChild>
+                            <td
+                              className={`table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors ${
+                                idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-border/80' : ''
+                              }`}
+                            >
+                              <span className="font-medium text-foreground">{f.fmt(r.values[f.key])}</span>
+                              <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                                ({factorScore.toFixed(1)}%)
+                              </span>
+                            </td>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                            <div className="font-bold text-primary border-b pb-1">{f.label} • {r.warehouse}</div>
+                            <div><strong>Calculation:</strong> {formulaText}</div>
+                            <div><strong>Benchmark ({r.benchmark[f.key].isManual ? 'Manual Target' : 'Top Warehouse'}):</strong> {r.benchmark[f.key].label}</div>
+                            <div><strong>Factor Score:</strong> ({f.fmt(r.values[f.key])} ÷ {r.benchmark[f.key].value.toLocaleString()}) × 100 = <strong>{factorScore.toFixed(1)}%</strong></div>
+                            <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {factorScore.toFixed(1)}% × {prodWeightPerFactor.toFixed(1)}% Weight = +{factorPts.toFixed(2)} pts</div>
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    })}
+
+                    {/* Pending Deficit with Tooltip */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-right font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span>{r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                            ({r.pendingScore.toFixed(1)}%)
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                        <div className="font-bold text-amber-500 border-b pb-1">Pending Deficit • {r.warehouse}</div>
+                        <div><strong>Actual Value:</strong> {r.pendingDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
+                        <div><strong>Category Score:</strong> Lower is better (0 EGP = 100%). Score: <strong>{r.pendingScore.toFixed(1)}%</strong></div>
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Damage Deficit with Tooltip */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-right font-medium text-rose-600 dark:text-rose-400 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span>{r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                            ({r.damageScore.toFixed(1)}%)
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                        <div className="font-bold text-rose-500 border-b pb-1">Damage Deficit • {r.warehouse}</div>
+                        <div><strong>Actual Value:</strong> {r.damageDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
+                        <div><strong>Category Score:</strong> Lower is better (0 EGP = 100%). Score: <strong>{r.damageScore.toFixed(1)}%</strong></div>
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Extra Deficit with Tooltip & Deficit Pool Score */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span>{r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                            ({r.extraScore.toFixed(1)}%)
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                        <div className="font-bold text-red-500 border-b pb-1">Extra Deficit & Total Deficit Pool • {r.warehouse}</div>
+                        <div><strong>Extra Deficit:</strong> {r.extraDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
+                        <div><strong>Total Combined Deficit:</strong> {r.totalDeficit.toLocaleString()} EGP (Pending + Damage + Extra)</div>
+                        <div><strong>Deficit Benchmark Max:</strong> {r.benchmarkMaxDeficit.toLocaleString()} EGP</div>
+                        <div><strong>Total Deficit Pool Score:</strong> (1 - {r.totalDeficit.toLocaleString()} ÷ {r.benchmarkMaxDeficit.toLocaleString()}) × 100 = <strong>{r.deficitScore.toFixed(1)}%</strong></div>
+                        <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {r.deficitScore.toFixed(1)}% × {weights.deficits}% Weight = +{r.defPoints.toFixed(2)} pts</div>
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Total Performance with Breakdown Tooltip */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span className={`inline-block px-2.5 py-0.5 rounded font-bold ${scoreColor(r.score)}`}>
+                            {r.score.toFixed(1)}%
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1.5 p-3">
+                        <div className="font-bold text-foreground border-b pb-1">Total Performance Score • {r.warehouse}</div>
+                        <div className="flex justify-between"><span>NMV% Contribution ({weights.nmvPct}%):</span> <strong>+{r.nmvPoints.toFixed(2)} pts</strong></div>
+                        <div className="flex justify-between"><span>Productivity Contribution ({weights.productivity}%):</span> <strong>+{r.prodPoints.toFixed(2)} pts</strong></div>
+                        <div className="flex justify-between"><span>Deficits Contribution ({weights.deficits}%):</span> <strong>+{r.defPoints.toFixed(2)} pts</strong></div>
+                        <div className="border-t pt-1 flex justify-between font-bold text-primary text-sm">
+                          <span>Final Total Score:</span>
+                          <span>{r.score.toFixed(1)}%</span>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  </tr>
+                );
+              })}
+              {!rows.length && (
+                <tr>
+                  <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1} className="table-cell text-center text-muted-foreground py-8">
+                    No warehouse data for the selected period
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }

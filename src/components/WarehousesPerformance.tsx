@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow } from '@/lib/google-sheets';
+import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
@@ -13,9 +13,15 @@ interface Props {
   reconData: ReconRow[];
   onDemandData?: OnDemandRow[];
   fleetOpData?: FleetOpRow[];
+  pendingData?: PendingRow[];
 }
 
 type FactorKey = 'nmvPct' | 'avgValue' | 'avgOrders' | 'avgWeight' | 'ordersPerHour' | 'weightPerHour';
+
+interface PerformanceWeights {
+  nmvPct: number;
+  productivity: number;
+}
 
 const fmtNum = (v: number, maxDigits: number = 1) => {
   const clean = isNaN(v) || !isFinite(v) ? 0 : v;
@@ -42,16 +48,12 @@ const PRODUCTIVITY_FACTORS: { key: FactorKey; label: string; fmt: (v: number) =>
 
 const FACTORS: { key: FactorKey; label: string; fmt: (v: number) => string }[] = [NMV_FACTOR, ...PRODUCTIVITY_FACTORS];
 
-const DEFAULT_WEIGHTS: Record<FactorKey, number> = {
+const DEFAULT_WEIGHTS: PerformanceWeights = {
   nmvPct: 20,
-  avgValue: 15,
-  avgOrders: 20,
-  avgWeight: 15,
-  ordersPerHour: 15,
-  weightPerHour: 15,
+  productivity: 80,
 };
 
-const WEIGHTS_KEY = 'warehouse-perf-weights';
+const WEIGHTS_KEY = 'warehouse-perf-weights-v2';
 
 function defaultRange() {
   const now = new Date();
@@ -60,18 +62,23 @@ function defaultRange() {
 
 const INACTIVE_STATUSES = new Set(['NO_SHOW', 'OFF', 'Annual-Leave', 'Sick-Leave', 'Unpaid-Leave']);
 
-export default function WarehousesPerformance({ salaryData, reconData, onDemandData = [], fleetOpData = [] }: Props) {
+export default function WarehousesPerformance({ salaryData, reconData, onDemandData = [], fleetOpData = [], pendingData = [] }: Props) {
   const def = defaultRange();
   const [fromDate, setFromDate] = useState<Date | undefined>(def.from);
   const [toDate, setToDate] = useState<Date | undefined>(def.to);
-  const [weights, setWeights] = useState<Record<FactorKey, number>>(() => {
+  const [weights, setWeights] = useState<PerformanceWeights>(() => {
     try {
       const raw = localStorage.getItem(WEIGHTS_KEY);
-      if (raw) return { ...DEFAULT_WEIGHTS, ...JSON.parse(raw) };
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.nmvPct === 'number' && typeof parsed.productivity === 'number') {
+          return parsed;
+        }
+      }
     } catch { /* ignore */ }
     return DEFAULT_WEIGHTS;
   });
-  const [draft, setDraft] = useState<Record<FactorKey, number>>(weights);
+  const [draft, setDraft] = useState<PerformanceWeights>(weights);
   const [open, setOpen] = useState(false);
 
   useEffect(() => { localStorage.setItem(WEIGHTS_KEY, JSON.stringify(weights)); }, [weights]);
@@ -103,9 +110,10 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       ofdOrders: number;
       fleetWeight: number;
       tripTimeHrs: number;
+      pendingDeficit: number;
     }>();
     const get = (wh: string) => {
-      if (!agg.has(wh)) agg.set(wh, { orders: 0, weight: 0, days: 0, nmv: 0, ofd: 0, runSheets: 0, ofdOrders: 0, fleetWeight: 0, tripTimeHrs: 0 });
+      if (!agg.has(wh)) agg.set(wh, { orders: 0, weight: 0, days: 0, nmv: 0, ofd: 0, runSheets: 0, ofdOrders: 0, fleetWeight: 0, tripTimeHrs: 0, pendingDeficit: 0 });
       return agg.get(wh)!;
     };
 
@@ -163,9 +171,19 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       });
     }
 
+    // Pending Deficit per warehouse (LIABILITY_ON = 'Courier')
+    if (pendingData && pendingData.length > 0) {
+      pendingData.forEach(r => {
+        if ((r.LIABILITY_ON || '').toLowerCase() !== 'courier') return;
+        const wh = normalizeWarehouse(r.WAREHOUSE);
+        if (!wh || !inRange(r.CREATED_AT)) return;
+        const a = get(wh);
+        a.pendingDeficit += r.PENDING_VALUE || 0;
+      });
+    }
 
     const base = [...agg.entries()]
-      .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0)
+      .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0)
       .map(([wh, a]) => {
         const hasRunSheets = a.runSheets > 0;
         const values: Record<FactorKey, number> = {
@@ -191,27 +209,36 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
           ofd: a.ofd,
           runSheets: a.runSheets,
           tripTimeHrs: a.tripTimeHrs,
+          pendingDeficit: a.pendingDeficit,
           values,
         };
       });
 
-    // Normalize each factor against the best performer (0-100), then weight
+    // Normalize each factor against the best performer (0-100)
     const max: Record<FactorKey, number> = {} as Record<FactorKey, number>;
     FACTORS.forEach(f => { max[f.key] = Math.max(0, ...base.map(b => b.values[f.key])); });
-    const totalWeight = FACTORS.reduce((s, f) => s + (weights[f.key] || 0), 0) || 1;
+    const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) || 1;
 
     return base
       .map(b => {
-        const score = FACTORS.reduce((s, f) => {
-          const norm = max[f.key] ? (b.values[f.key] / max[f.key]) * 100 : 0;
-          return s + norm * ((weights[f.key] || 0) / totalWeight);
+        // NMV% normalized score (0-100)
+        const nmvNorm = max.nmvPct > 0 ? (b.values.nmvPct / max.nmvPct) * 100 : 0;
+        // Productivity average normalized score (0-100) across all 5 productivity factors
+        const prodNormSum = PRODUCTIVITY_FACTORS.reduce((sum, f) => {
+          const norm = max[f.key] > 0 ? (b.values[f.key] / max[f.key]) * 100 : 0;
+          return sum + norm;
         }, 0);
+        const prodNormAvg = prodNormSum / PRODUCTIVITY_FACTORS.length;
+
+        // Unified score: NMV% weight + Productivity weight
+        const score = (nmvNorm * ((weights.nmvPct || 0) / totalWeight)) + (prodNormAvg * ((weights.productivity || 0) / totalWeight));
+
         return { ...b, score: safeDiv(score, 1) };
       })
       .sort((a, b) => b.score - a.score);
-  }, [salaryData, reconData, onDemandData, fleetOpData, fromDate, toDate, weights]);
+  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, fromDate, toDate, weights]);
 
-  const draftTotal = FACTORS.reduce((s, f) => s + (draft[f.key] || 0), 0);
+  const draftTotal = (draft.nmvPct || 0) + (draft.productivity || 0);
 
   const handleSave = () => {
     if (Math.round(draftTotal) !== 100) {
@@ -241,6 +268,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         'Avg Weight': +r.values.avgWeight.toFixed(2),
         'Orders/Hour': +r.values.ordersPerHour.toFixed(2),
         'Weight/Hour': +r.values.weightPerHour.toFixed(2),
+        'Pending Deficit': +r.pendingDeficit.toFixed(2),
         'Total Performance %': +r.score.toFixed(2),
       })),
       'Warehouses_Performance'
@@ -264,23 +292,33 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Performance Weights</DialogTitle>
-                <DialogDescription>Set the relative weight of every factor. The total must equal 100%.</DialogDescription>
+                <DialogDescription>Set the relative weight for NMV% and Productivity. The total must equal 100%.</DialogDescription>
               </DialogHeader>
               <div className="space-y-3">
-                {FACTORS.map(f => (
-                  <div key={f.key} className="flex items-center gap-3">
-                    <label className="flex-1 text-sm font-medium">{f.label}</label>
-                    <Input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={draft[f.key]}
-                      onChange={e => setDraft({ ...draft, [f.key]: Math.max(0, parseFloat(e.target.value) || 0) })}
-                      className="h-9 w-24"
-                    />
-                    <span className="text-sm text-muted-foreground">%</span>
-                  </div>
-                ))}
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 text-sm font-medium">NMV%</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={draft.nmvPct}
+                    onChange={e => setDraft({ ...draft, nmvPct: Math.max(0, parseFloat(e.target.value) || 0) })}
+                    className="h-9 w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 text-sm font-medium">Productivity</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={draft.productivity}
+                    onChange={e => setDraft({ ...draft, productivity: Math.max(0, parseFloat(e.target.value) || 0) })}
+                    className="h-9 w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
                 <div className={`text-sm font-semibold ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
                   Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '' : '(must be 100%)'}
                 </div>
@@ -303,7 +341,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         <Warehouse className="h-4 w-4" />
         <span>{rows.length} warehouses</span>
         <span className="opacity-60">
-          | Weights: {FACTORS.map(f => `${f.label} ${weights[f.key]}%`).join(' · ')}
+          | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}%
         </span>
       </div>
 
@@ -315,18 +353,19 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
               <th rowSpan={2} className="table-header-cell sticky left-[60px] z-30 min-w-[220px] text-left">Warehouse</th>
               <th rowSpan={2} className="table-header-cell text-center min-w-[120px]">
                 {NMV_FACTOR.label}
-                <span className="block text-[10px] font-normal opacity-70">{weights[NMV_FACTOR.key]}%</span>
+                <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
               </th>
               <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20">
                 Productivity
+                <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
               </th>
+              <th rowSpan={2} className="table-header-cell text-center min-w-[140px]">Pending Deficit</th>
               <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
             </tr>
             <tr>
               {PRODUCTIVITY_FACTORS.map(f => (
                 <th key={f.key} className="table-header-cell text-center min-w-[120px]">
                   {f.label}
-                  <span className="block text-[10px] font-normal opacity-70">{weights[f.key]}%</span>
                 </th>
               ))}
             </tr>
@@ -340,6 +379,9 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
                 {PRODUCTIVITY_FACTORS.map(f => (
                   <td key={f.key} className="table-cell text-center">{f.fmt(r.values[f.key])}</td>
                 ))}
+                <td className="table-cell text-right font-semibold text-rose-600 dark:text-rose-400">
+                  {r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                </td>
                 <td className="table-cell text-center">
                   <span className={`inline-block px-2 py-0.5 rounded font-semibold ${scoreColor(r.score)}`}>
                     {r.score.toFixed(1)}%
@@ -349,7 +391,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={1 + 1 + 1 + PRODUCTIVITY_FACTORS.length + 1} className="table-cell text-center text-muted-foreground py-8">
+                <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 1 + 1} className="table-cell text-center text-muted-foreground py-8">
                   No warehouse data for the selected period
                 </td>
               </tr>

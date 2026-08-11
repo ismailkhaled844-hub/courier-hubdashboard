@@ -132,6 +132,32 @@ export async function fetchFleetOperationData(): Promise<FleetOpRow[]> {
   }));
 }
 
+const PENDING_SHEET_ID = '1qUyusVJXcXJHE3WJIQybh7k2tK96YHt-dKrysmY03sA';
+
+export interface PendingRow {
+  CREATED_AT: string;
+  PENDING_VALUE: number;
+  WAREHOUSE: string;
+  LIABILITY_ON: string;
+}
+
+export async function fetchPendingData(): Promise<PendingRow[]> {
+  const rows = await fetchSheet('Pending', PENDING_SHEET_ID);
+  if (rows.length < 2) return [];
+  const num = (s: any) => {
+    if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
+    const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
+  };
+  return rows.slice(1).filter(r => r.length > 8 && r[8]).map(r => ({
+    CREATED_AT: r[1] || '',
+    PENDING_VALUE: num(r[7]),
+    WAREHOUSE: normalizeWarehouse((r[8] || '').trim()),
+    LIABILITY_ON: (r[15] || '').trim(),
+  }));
+}
+
 export async function fetchLastUpdateDates(): Promise<{ salaryLastUpdate: string; reconLastUpdate: string }> {
   const [salaryRows, reconRows] = await Promise.all([
     fetchSheet('Logistics Salary'),

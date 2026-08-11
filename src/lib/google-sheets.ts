@@ -67,20 +67,27 @@ export interface SalaryRow {
 
 const TEAM_NAME_MAP: Record<string, string> = {
   'El-Mahala': 'El Mahala',
-  'Khorshed Alex': 'khorshed_Alex',
+  'khorshed_Alex': 'Khorshed Alex',
+  'khorshed_alex': 'Khorshed Alex',
+  'Khorshed Alex': 'Khorshed Alex',
 };
 
 // Warehouses that must be merged into a single canonical name
 const MERGED_WAREHOUSES: { match: string[]; name: string }[] = [
   { match: ['sakkarah', 'sakarah', 'al mansouriah', 'almansouriah', 'al mansourya', 'mansourya'], name: 'Al Mansourya - Giza' },
+  { match: ['khorshed_alex', 'khorshed alex'], name: 'Khorshed Alex' },
+  { match: ['el-mahala', 'el mahala'], name: 'El Mahala' },
 ];
 
 export function normalizeWarehouse(name: string): string {
   const raw = (name || '').trim();
   if (!raw) return raw;
-  const lower = raw.toLowerCase();
+  const lower = raw.toLowerCase().trim();
+  if (lower === 'khorshed_alex' || lower === 'khorshed alex') return 'Khorshed Alex';
+  if (lower === 'el-mahala' || lower === 'el mahala') return 'El Mahala';
+
   for (const m of MERGED_WAREHOUSES) {
-    if (m.match.some(k => lower.includes(k))) return m.name;
+    if (m.match.some(k => lower === k || lower.includes(k))) return m.name;
   }
   return raw;
 }
@@ -333,7 +340,7 @@ export async function fetchReconData(): Promise<ReconRow[]> {
 
 // Region mapping
 const GREATER_CAIRO_WH = ['Barageel', 'Mostorod', 'Al Mansourya - Giza', 'Barageel 2 PL', 'Saryaqus 2 pl'];
-const REGIONAL_WH = ['El Mahala', 'Mansoura FC', 'Sharqya', 'Tanta', 'Assiut FC', 'Bani sweif', 'Menya Samalot', 'Sohag', 'khorshed_Alex', 'Khorshed Frozen'];
+const REGIONAL_WH = ['El Mahala', 'Mansoura FC', 'Sharqya', 'Tanta', 'Assiut FC', 'Bani sweif', 'Menya Samalot', 'Sohag', 'Khorshed Alex', 'Khorshed Frozen'];
 
 
 export function getRegion(teamName: string): string {

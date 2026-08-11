@@ -5,9 +5,8 @@ import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Download, Settings2, RotateCcw, Warehouse, HelpCircle, BookOpen, Calculator, CheckCircle2, TrendingUp, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Download, Settings2, RotateCcw, Warehouse, HelpCircle, BookOpen, Calculator, CheckCircle2, TrendingUp, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Props {
@@ -27,6 +26,7 @@ interface PerformanceWeights {
   nmvPct: number;
   productivity: number;
   deficits: number;
+  tickets: number;
 }
 
 interface PerformanceTargets {
@@ -37,6 +37,23 @@ interface PerformanceTargets {
   ordersPerHour: number;
   weightPerHour: number;
   maxDeficit: number;
+  maxTickets: number;
+}
+
+interface CellDetailModalData {
+  title: string;
+  warehouse: string;
+  actualLabel: string;
+  actualValue: string;
+  formula: string;
+  benchmarkLabel: string;
+  benchmarkValue: string;
+  scoreText: string;
+  scorePct: number;
+  weightLabel: string;
+  weightPct: number;
+  pointsEarned: number;
+  explanation: string;
 }
 
 const fmtNum = (v: number, maxDigits: number = 1) => {
@@ -68,6 +85,7 @@ const DEFAULT_WEIGHTS: PerformanceWeights = {
   nmvPct: 20,
   productivity: 60,
   deficits: 20,
+  tickets: 0,
 };
 
 const DEFAULT_TARGETS: PerformanceTargets = {
@@ -78,10 +96,11 @@ const DEFAULT_TARGETS: PerformanceTargets = {
   ordersPerHour: 0,
   weightPerHour: 0,
   maxDeficit: 0,
+  maxTickets: 0,
 };
 
-const WEIGHTS_KEY = 'warehouse-perf-weights-v3';
-const TARGETS_KEY = 'warehouse-perf-targets-v1';
+const WEIGHTS_KEY = 'warehouse-perf-weights-v4';
+const TARGETS_KEY = 'warehouse-perf-targets-v2';
 
 function defaultRange() {
   const now = new Date();
@@ -110,7 +129,7 @@ export default function WarehousesPerformance({
       if (raw) {
         const parsed = JSON.parse(raw);
         if (typeof parsed.nmvPct === 'number' && typeof parsed.productivity === 'number' && typeof parsed.deficits === 'number') {
-          return parsed;
+          return { tickets: 0, ...parsed };
         }
       }
     } catch { /* ignore */ }
@@ -131,6 +150,7 @@ export default function WarehousesPerformance({
   const [draftTargets, setDraftTargets] = useState<PerformanceTargets>(targets);
   const [open, setOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [cellDetail, setCellDetail] = useState<CellDetailModalData | null>(null);
 
   useEffect(() => { localStorage.setItem(WEIGHTS_KEY, JSON.stringify(weights)); }, [weights]);
   useEffect(() => { localStorage.setItem(TARGETS_KEY, JSON.stringify(targets)); }, [targets]);
@@ -370,7 +390,8 @@ export default function WarehousesPerformance({
     };
 
     const benchmarkMaxDeficit = targets.maxDeficit > 0 ? targets.maxDeficit : dynamicMaxTotalDeficit;
-    const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) + (weights.deficits || 0) || 1;
+    const benchmarkMaxTickets = targets.maxTickets > 0 ? targets.maxTickets : maxTickets;
+    const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) + (weights.deficits || 0) + (weights.tickets || 0) || 1;
 
     return base
       .map(b => {
@@ -399,15 +420,16 @@ export default function WarehousesPerformance({
         const deficitScore = benchmarkMaxDeficit > 0 ? Math.max(0, (1 - (b.totalDeficit / benchmarkMaxDeficit)) * 100) : 100;
 
         // Tickets relative score: lower is better (0 tickets = 100%)
-        const ticketsScore = maxTickets > 0 ? Math.max(0, (1 - (b.tickets / maxTickets)) * 100) : 100;
+        const ticketsScore = benchmarkMaxTickets > 0 ? Math.max(0, (1 - (b.tickets / benchmarkMaxTickets)) * 100) : 100;
 
         // Points earned from each category
         const nmvPoints = (nmvNorm * ((weights.nmvPct || 0) / totalWeight));
         const prodPoints = (prodNormAvg * ((weights.productivity || 0) / totalWeight));
         const defPoints = (deficitScore * ((weights.deficits || 0) / totalWeight));
+        const ticketsPoints = (ticketsScore * ((weights.tickets || 0) / totalWeight));
 
-        // Unified score: NMV% weight + Productivity weight + Deficits weight
-        const score = nmvPoints + prodPoints + defPoints;
+        // Unified score: NMV% weight + Productivity weight + Deficits weight + Tickets weight
+        const score = nmvPoints + prodPoints + defPoints + ticketsPoints;
 
         return {
           ...b,
@@ -421,14 +443,16 @@ export default function WarehousesPerformance({
           nmvPoints: safeDiv(nmvPoints, 1),
           prodPoints: safeDiv(prodPoints, 1),
           defPoints: safeDiv(defPoints, 1),
+          ticketsPoints: safeDiv(ticketsPoints, 1),
           benchmark,
           benchmarkMaxDeficit,
+          benchmarkMaxTickets,
         };
       })
       .sort((a, b) => b.score - a.score);
   }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, ticketsData, fromDate, toDate, weights, targets]);
 
-  const draftTotal = (draftWeights.nmvPct || 0) + (draftWeights.productivity || 0) + (draftWeights.deficits || 0);
+  const draftTotal = (draftWeights.nmvPct || 0) + (draftWeights.productivity || 0) + (draftWeights.deficits || 0) + (draftWeights.tickets || 0);
 
   const handleSave = () => {
     if (Math.round(draftTotal) !== 100) {
@@ -485,542 +509,685 @@ export default function WarehousesPerformance({
     s >= 75 ? 'bg-success/15 text-success' : s >= 50 ? 'bg-info/15 text-info' : s >= 30 ? 'bg-warning/15 text-warning' : 'bg-destructive/15 text-destructive';
 
   return (
-    <TooltipProvider delayDuration={150}>
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3 justify-between">
-          <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
-          <div className="flex items-center gap-2">
-            {/* Calculation Guide Button */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setGuideOpen(true)}
-              className="text-xs h-9 gap-1 text-primary border-primary/40 hover:bg-primary/10 font-medium"
-            >
-              <HelpCircle className="h-4 w-4 text-primary" />
-              <span>Logic & Guide</span>
-            </Button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3 justify-between">
+        <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
+        <div className="flex items-center gap-2">
+          {/* Calculation Guide Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setGuideOpen(true)}
+            className="text-xs h-9 gap-1 text-primary border-primary/40 hover:bg-primary/10 font-medium"
+          >
+            <HelpCircle className="h-4 w-4 text-primary" />
+            <span>Logic & Guide</span>
+          </Button>
 
-            {/* Weights & Benchmarks Dialog */}
-            <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) { setDraftWeights(weights); setDraftTargets(targets); } }}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="sm" className="text-xs h-9">
-                  <Settings2 className="h-4 w-4 mr-1" /> Weights & Benchmarks
+          {/* Weights & Benchmarks Dialog */}
+          <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) { setDraftWeights(weights); setDraftTargets(targets); } }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" className="text-xs h-9">
+                <Settings2 className="h-4 w-4 mr-1" /> Weights & Benchmarks
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Performance Weights & Target Benchmarks</DialogTitle>
+                <DialogDescription>Configure category weights (%) and optional manual benchmark targets.</DialogDescription>
+              </DialogHeader>
+
+              <Tabs defaultValue="weights" className="w-full mt-2">
+                <TabsList className="grid grid-cols-2 w-full">
+                  <TabsTrigger value="weights">Category Weights (%)</TabsTrigger>
+                  <TabsTrigger value="benchmarks">Manual Benchmarks</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="weights" className="space-y-3 pt-3">
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 text-sm font-medium">NMV% Weight</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draftWeights.nmvPct}
+                      onChange={e => setDraftWeights({ ...draftWeights, nmvPct: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      className="h-9 w-24"
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 text-sm font-medium">Productivity Weight</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draftWeights.productivity}
+                      onChange={e => setDraftWeights({ ...draftWeights, productivity: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      className="h-9 w-24"
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 text-sm font-medium">Deficits Weight</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draftWeights.deficits}
+                      onChange={e => setDraftWeights({ ...draftWeights, deficits: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      className="h-9 w-24"
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 text-sm font-medium">Tickets Weight</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draftWeights.tickets || 0}
+                      onChange={e => setDraftWeights({ ...draftWeights, tickets: Math.max(0, parseFloat(e.target.value) || 0) })}
+                      className="h-9 w-24"
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                  <div className={`text-sm font-semibold pt-2 border-t ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
+                    Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '✓' : '(must equal 100%)'}
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="benchmarks" className="space-y-3 pt-3">
+                  <p className="text-xs text-muted-foreground bg-muted/60 p-2.5 rounded-md leading-relaxed">
+                    💡 <strong>اختياري:</strong> يمكنك تحديد مستهدف رقمي (Target). إذا تركت القيمة <strong>0 أو فارغة</strong>، سيعتمد النظام تلقائياً على أداء أعلى مخزن في نفس الفترة.
+                  </p>
+                  <div className="space-y-2.5">
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target Avg Value (EGP)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max)"
+                        value={draftTargets.avgValue || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, avgValue: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target Avg Orders (Orders/RunSheet)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max)"
+                        value={draftTargets.avgOrders || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, avgOrders: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target Avg Weight (KG/RunSheet)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max)"
+                        value={draftTargets.avgWeight || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, avgWeight: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target Orders / Hour</label>
+                      <Input
+                        type="number"
+                        step={0.1}
+                        placeholder="Auto (Max)"
+                        value={draftTargets.ordersPerHour || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, ordersPerHour: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target Weight / Hour (KG/hr)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max)"
+                        value={draftTargets.weightPerHour || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, weightPerHour: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Target NMV%</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max)"
+                        value={draftTargets.nmvPct || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, nmvPct: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Max Deficit Tolerance (EGP)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max Deficit)"
+                        value={draftTargets.maxDeficit || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, maxDeficit: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 text-xs font-medium">Max Tickets Tolerance (Count)</label>
+                      <Input
+                        type="number"
+                        placeholder="Auto (Max Tickets)"
+                        value={draftTargets.maxTickets || ''}
+                        onChange={e => setDraftTargets({ ...draftTargets, maxTickets: parseFloat(e.target.value) || 0 })}
+                        className="h-8 w-28 text-xs"
+                      />
+                    </div>
+                  </div>
+                </TabsContent>
+              </Tabs>
+
+              <DialogFooter className="mt-3">
+                <Button variant="ghost" size="sm" onClick={() => { setDraftWeights(DEFAULT_WEIGHTS); setDraftTargets(DEFAULT_TARGETS); }}>
+                  <RotateCcw className="h-4 w-4 mr-1" /> Reset All
                 </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>Performance Weights & Target Benchmarks</DialogTitle>
-                  <DialogDescription>Configure category weights (%) and optional manual benchmark targets.</DialogDescription>
-                </DialogHeader>
+                <Button size="sm" onClick={handleSave}>Save Settings</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
-                <Tabs defaultValue="weights" className="w-full mt-2">
-                  <TabsList className="grid grid-cols-2 w-full">
-                    <TabsTrigger value="weights">Category Weights (%)</TabsTrigger>
-                    <TabsTrigger value="benchmarks">Manual Benchmarks</TabsTrigger>
-                  </TabsList>
-
-                  <TabsContent value="weights" className="space-y-3 pt-3">
-                    <div className="flex items-center gap-3">
-                      <label className="flex-1 text-sm font-medium">NMV% Weight</label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={draftWeights.nmvPct}
-                        onChange={e => setDraftWeights({ ...draftWeights, nmvPct: Math.max(0, parseFloat(e.target.value) || 0) })}
-                        className="h-9 w-24"
-                      />
-                      <span className="text-sm text-muted-foreground">%</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="flex-1 text-sm font-medium">Productivity Weight</label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={draftWeights.productivity}
-                        onChange={e => setDraftWeights({ ...draftWeights, productivity: Math.max(0, parseFloat(e.target.value) || 0) })}
-                        className="h-9 w-24"
-                      />
-                      <span className="text-sm text-muted-foreground">%</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="flex-1 text-sm font-medium">Deficits Weight</label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={draftWeights.deficits}
-                        onChange={e => setDraftWeights({ ...draftWeights, deficits: Math.max(0, parseFloat(e.target.value) || 0) })}
-                        className="h-9 w-24"
-                      />
-                      <span className="text-sm text-muted-foreground">%</span>
-                    </div>
-                    <div className={`text-sm font-semibold pt-2 border-t ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
-                      Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '✓' : '(must equal 100%)'}
-                    </div>
-                  </TabsContent>
-
-                  <TabsContent value="benchmarks" className="space-y-3 pt-3">
-                    <p className="text-xs text-muted-foreground bg-muted/60 p-2.5 rounded-md leading-relaxed">
-                      💡 <strong>اختياري:</strong> يمكنك تحديد مستهدف رقمي (Target). إذا تركت القيمة <strong>0 أو فارغة</strong>، سيعتمد النظام تلقائياً على أداء أعلى مخزن في نفس الفترة.
-                    </p>
-                    <div className="space-y-2.5">
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target Avg Value (EGP)</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max)"
-                          value={draftTargets.avgValue || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, avgValue: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target Avg Orders (Orders/RunSheet)</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max)"
-                          value={draftTargets.avgOrders || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, avgOrders: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target Avg Weight (KG/RunSheet)</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max)"
-                          value={draftTargets.avgWeight || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, avgWeight: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target Orders / Hour</label>
-                        <Input
-                          type="number"
-                          step={0.1}
-                          placeholder="Auto (Max)"
-                          value={draftTargets.ordersPerHour || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, ordersPerHour: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target Weight / Hour (KG/hr)</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max)"
-                          value={draftTargets.weightPerHour || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, weightPerHour: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Target NMV%</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max)"
-                          value={draftTargets.nmvPct || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, nmvPct: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 text-xs font-medium">Max Deficit Tolerance (EGP)</label>
-                        <Input
-                          type="number"
-                          placeholder="Auto (Max Deficit)"
-                          value={draftTargets.maxDeficit || ''}
-                          onChange={e => setDraftTargets({ ...draftTargets, maxDeficit: parseFloat(e.target.value) || 0 })}
-                          className="h-8 w-28 text-xs"
-                        />
-                      </div>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-
-                <DialogFooter className="mt-3">
-                  <Button variant="ghost" size="sm" onClick={() => { setDraftWeights(DEFAULT_WEIGHTS); setDraftTargets(DEFAULT_TARGETS); }}>
-                    <RotateCcw className="h-4 w-4 mr-1" /> Reset All
-                  </Button>
-                  <Button size="sm" onClick={handleSave}>Save Settings</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-
-            <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length} className="text-xs h-9">
-              <Download className="h-4 w-4 mr-1" /> Export Excel
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length} className="text-xs h-9">
+            <Download className="h-4 w-4 mr-1" /> Export Excel
+          </Button>
         </div>
+      </div>
 
-        {/* Calculation Guide Dialog */}
-        <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
-          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-primary">
-                <BookOpen className="h-5 w-5" />
-                دليل الحسابات ولوجيك التقييم بالأمثلة (Calculation Guide & Logic)
-              </DialogTitle>
-              <DialogDescription>
-                شرح شامل ومفصل لكيفية حساب كل عمود، تحديد الـ Benchmark، وتوزيع الأوزان حتى استخراج السكور النهائي.
-              </DialogDescription>
-            </DialogHeader>
+      {/* Interactive Detail Modal on Click */}
+      <Dialog open={Boolean(cellDetail)} onOpenChange={o => { if (!o) setCellDetail(null); }}>
+        <DialogContent className="max-w-md">
+          {cellDetail && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center justify-between gap-2 border-b pb-2">
+                  <DialogTitle className="text-base flex items-center gap-1.5 text-primary">
+                    <Info className="h-4 w-4" />
+                    <span>{cellDetail.title}</span>
+                  </DialogTitle>
+                  <span className="text-xs px-2 py-0.5 rounded bg-primary/15 text-primary font-bold">
+                    {cellDetail.warehouse}
+                  </span>
+                </div>
+                <DialogDescription className="pt-1 text-xs">
+                  تفاصيل طريقة الحساب، المقارنة بالـ Benchmark، والنقاط المكتسبة في التقييم النهائي.
+                </DialogDescription>
+              </DialogHeader>
 
-            <div className="space-y-4 text-xs leading-relaxed text-foreground pt-2">
-              {/* Card 1: Overview */}
-              <div className="p-3 rounded-lg border bg-muted/40 space-y-2">
-                <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
-                  <TrendingUp className="h-4 w-4" /> 1. منهجية التقييم المعياري (Benchmark Normalization)
-                </h4>
-                <p>
-                  لكل مؤشر، يتم مقارنة أداء كل مخزن إما بمستهدف يدوي <strong>(Target)</strong> حدده المستخدم، أو بأداء <strong>أعلى مخزن (Top Performer = 100%)</strong> في نفس الفترة المحددة بالفلتر.
-                </p>
-                <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-[11px]">
-                  <div className="p-2 rounded bg-card border text-center">
-                    <div className="text-muted-foreground font-sans text-[10px]">وزن NMV%</div>
-                    <div className="font-bold text-primary">{weights.nmvPct}%</div>
+              <div className="space-y-3 text-xs pt-1">
+                {/* Metric Summary Cards */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded bg-muted/60 border">
+                    <div className="text-muted-foreground text-[11px]">{cellDetail.actualLabel}</div>
+                    <div className="font-bold text-sm text-foreground mt-0.5">{cellDetail.actualValue}</div>
                   </div>
-                  <div className="p-2 rounded bg-card border text-center">
-                    <div className="text-muted-foreground font-sans text-[10px]">وزن الإنتاجية (5 مؤشرات)</div>
-                    <div className="font-bold text-primary">{weights.productivity}%</div>
-                    <div className="text-[9px] text-muted-foreground font-sans">({(weights.productivity / 5).toFixed(1)}% لكل مؤشر)</div>
-                  </div>
-                  <div className="p-2 rounded bg-card border text-center">
-                    <div className="text-muted-foreground font-sans text-[10px]">وزن العجوزات (Deficits)</div>
-                    <div className="font-bold text-primary">{weights.deficits}%</div>
+                  <div className="p-2.5 rounded bg-muted/60 border">
+                    <div className="text-muted-foreground text-[11px]">الـ Benchmark المعتمد</div>
+                    <div className="font-bold text-sm text-primary mt-0.5">{cellDetail.benchmarkValue}</div>
                   </div>
                 </div>
-              </div>
 
-              {/* Card 2: NMV% */}
-              <div className="p-3 rounded-lg border bg-card space-y-1.5">
-                <h4 className="font-bold text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4" /> 2. نسبة التسليم المالي (NMV%)
-                </h4>
-                <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
-                  NMV% = (∑ NMV ÷ ∑ OFD_VALUE) × 100
-                </div>
-                <p>
-                  <strong>طريقة حساب السكور:</strong> (NMV% المخزن ÷ Benchmark) × 100.
-                </p>
-                <p className="text-muted-foreground">
-                  <strong>مثال:</strong> مخزن حقق NMV% بقيمة 97.87%، وكان الـ Benchmark هو 99.50%، فإن سكور المؤشر = (97.87 ÷ 99.50) × 100 = <strong>98.36%</strong>. يساهم في الإجمالي بـ: 98.36% × {weights.nmvPct}% = <strong>+{(98.36 * (weights.nmvPct / 100)).toFixed(2)} نقطة</strong>.
-                </p>
-              </div>
-
-              {/* Card 3: Productivity 5 Factors */}
-              <div className="p-3 rounded-lg border bg-card space-y-2">
-                <h4 className="font-bold text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                  <Calculator className="h-4 w-4" /> 3. مؤشرات الإنتاجية الـ 5 (Productivity) — وزن إجمالي {weights.productivity}%
-                </h4>
-                <div className="space-y-1.5 pl-2 border-l-2 border-primary/30">
-                  <div>
-                    <strong>• Avg Value (متوسط قيمة الرحلة):</strong> ∑ OFD_VALUE ÷ عدد الـ Run Sheets.
-                  </div>
-                  <div>
-                    <strong>• Avg Orders (متوسط طلبات الرحلة):</strong> ∑ OFD_ORDERS ÷ عدد الـ Run Sheets.
-                  </div>
-                  <div>
-                    <strong>• Avg Weight (متوسط وزن الرحلة):</strong> ∑ WEIGHT ÷ عدد الـ Run Sheets.
-                  </div>
-                  <div>
-                    <strong>• Orders/Hour (معدل الطلبات بالساعة):</strong> ∑ OFD_ORDERS ÷ ∑ TRIP_TIME_HRS.
-                  </div>
-                  <div>
-                    <strong>• Weight/Hour (معدل الوزن بالساعة):</strong> ∑ WEIGHT ÷ ∑ TRIP_TIME_HRS.
+                {/* Calculation Formula */}
+                <div className="p-2.5 rounded bg-card border space-y-1">
+                  <div className="font-semibold text-[11px] text-muted-foreground">معادلة استخراج القيمة:</div>
+                  <div className="font-mono text-[11px] bg-muted/80 p-1.5 rounded text-foreground break-words">
+                    {cellDetail.formula}
                   </div>
                 </div>
-                <p className="text-muted-foreground bg-muted/50 p-2 rounded">
-                  <strong>مثال عملي (Avg Value):</strong> مخزن الشرقية حقق متوسط 77,768 جنيه/رحلة، وأعلى مخزن (المنصورة) حقق 97,510 جنيه/رحلة. السكور = (77,768 ÷ 97,510) × 100 = <strong>79.75%</strong>. النقاط المكتسبة = 79.75% × {(weights.productivity / 5).toFixed(1)}% = <strong>+{(79.75 * ((weights.productivity / 5) / 100)).toFixed(2)} نقطة</strong>.
+
+                {/* Score & Benchmark Normalization */}
+                <div className="p-2.5 rounded bg-card border space-y-1">
+                  <div className="font-semibold text-[11px] text-muted-foreground">حساب سكور المؤشر (Score %):</div>
+                  <div className="font-mono text-[11px] bg-muted/80 p-1.5 rounded text-primary font-bold">
+                    {cellDetail.scoreText}
+                  </div>
+                </div>
+
+                {/* Weight & Points Earned */}
+                <div className="p-2.5 rounded bg-primary/10 border border-primary/20 space-y-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold">{cellDetail.weightLabel}:</span>
+                    <span className="font-bold text-primary">{cellDetail.weightPct.toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm font-bold text-emerald-600 dark:text-emerald-400 pt-1 border-t border-primary/20">
+                    <span>النقاط المكتسبة في الإجمالي:</span>
+                    <span>+{cellDetail.pointsEarned.toFixed(2)} pts</span>
+                  </div>
+                </div>
+
+                {/* Explanation in Arabic */}
+                <p className="text-muted-foreground text-[11px] leading-relaxed bg-muted/40 p-2 rounded">
+                  {cellDetail.explanation}
                 </p>
               </div>
 
-              {/* Card 4: Deficits */}
-              <div className="p-3 rounded-lg border bg-card space-y-2">
-                <h4 className="font-bold text-sm text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
-                  <ShieldCheck className="h-4 w-4" /> 4. مؤشرات العجوزات (Deficits) — وزن إجمالي {weights.deficits}%
-                </h4>
-                <p>
-                  العجوزات مؤشر خسارة (Negative Metric). المخزن صاحب العجز الأقل هو الأفضل.
-                </p>
-                <div className="space-y-1 font-mono text-[11px] bg-muted p-2 rounded">
-                  <div>• Pending Deficit = مجموع PENDING_VALUE (حيث المسؤولية Liability = Courier)</div>
-                  <div>• Damage Deficit = مجموع DAMAGE_VALUE (حيث المسؤولية Liability = Courier)</div>
-                  <div>• Extra Deficit = مجموع EXTRA_VALUE (حيث المسؤولية Liability = Courier)</div>
-                  <div>• Total Deficit = Pending + Damage + Extra</div>
-                </div>
-                <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
-                  Deficit Score = (1 - (Total Deficit ÷ Max Deficit Benchmark)) × 100
-                </div>
-                <p className="text-muted-foreground">
-                  <strong>مثال:</strong> إذا كان عجز المخزن 500 جنيه، وأعلى عجز سجله أسوأ مخزن هو 35,000 جنيه: السكور = (1 - 500 ÷ 35,000) × 100 = <strong>98.57%</strong>. وإذا كان العجز 0 جنيه يأخذ <strong>100% كاملة</strong>.
-                </p>
-              </div>
+              <DialogFooter className="mt-2">
+                <Button size="sm" onClick={() => setCellDetail(null)}>إغلاق (Close)</Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
-              {/* Card 5: Tickets */}
-              <div className="p-3 rounded-lg border bg-card space-y-1.5">
-                <h4 className="font-bold text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-                  <AlertTriangle className="h-4 w-4" /> 5. تذاكر الدعم والشكاوى (Support Tickets)
-                </h4>
-                <p>
-                  يتم سحب التذاكر من شيت <strong>Ecommerce Max Support Tickets</strong> بناءً على عمود <strong>WAREHOUSE</strong> وتاريخ <strong>DAT</strong> في الفترة المحددة، وعمل <strong>COUNT</strong> لإجمالي عدد التذاكر المسجلة للمخزن.
-                </p>
-              </div>
+      {/* Calculation Guide Dialog */}
+      <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-primary">
+              <BookOpen className="h-5 w-5" />
+              دليل الحسابات ولوجيك التقييم بالأمثلة (Calculation Guide & Logic)
+            </DialogTitle>
+            <DialogDescription>
+              شرح شامل ومفصل لكيفية حساب كل عمود، تحديد الـ Benchmark، وتوزيع الأوزان حتى استخراج السكور النهائي.
+            </DialogDescription>
+          </DialogHeader>
 
-              {/* Card 6: Total Score Formula */}
-              <div className="p-3 rounded-lg border bg-primary/10 border-primary/30 space-y-1.5">
-                <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
-                  🏆 6. معادلة التقييم النهائي الإجمالي (Total Performance %)
-                </h4>
-                <div className="font-mono text-[11px] p-2 bg-background rounded border">
-                  Total Performance = (NMV_Score × {weights.nmvPct}%) + (Productivity_Avg_Score × {weights.productivity}%) + (Deficits_Score × {weights.deficits}%)
+          <div className="space-y-4 text-xs leading-relaxed text-foreground pt-2">
+            {/* Card 1: Overview */}
+            <div className="p-3 rounded-lg border bg-muted/40 space-y-2">
+              <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
+                <TrendingUp className="h-4 w-4" /> 1. منهجية التقييم المعياري (Benchmark Normalization)
+              </h4>
+              <p>
+                لكل مؤشر، يتم مقارنة أداء كل مخزن إما بمستهدف يدوي <strong>(Target)</strong> حدده المستخدم، أو بأداء <strong>أعلى مخزن (Top Performer = 100%)</strong> في نفس الفترة المحددة بالفلتر.
+              </p>
+              <div className="grid grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
+                <div className="p-2 rounded bg-card border text-center">
+                  <div className="text-muted-foreground font-sans text-[10px]">وزن NMV%</div>
+                  <div className="font-bold text-primary">{weights.nmvPct}%</div>
                 </div>
-                <p className="text-muted-foreground text-[11px]">
-                  حيث أن Productivity_Avg_Score هو متوسط سكورات مؤشرات الإنتاجية الـ 5.
-                </p>
+                <div className="p-2 rounded bg-card border text-center">
+                  <div className="text-muted-foreground font-sans text-[10px]">وزن الإنتاجية (5 مؤشرات)</div>
+                  <div className="font-bold text-primary">{weights.productivity}%</div>
+                  <div className="text-[9px] text-muted-foreground font-sans">({(weights.productivity / 5).toFixed(1)}% لكل مؤشر)</div>
+                </div>
+                <div className="p-2 rounded bg-card border text-center">
+                  <div className="text-muted-foreground font-sans text-[10px]">وزن العجوزات (Deficits)</div>
+                  <div className="font-bold text-primary">{weights.deficits}%</div>
+                </div>
+                <div className="p-2 rounded bg-card border text-center">
+                  <div className="text-muted-foreground font-sans text-[10px]">وزن التذاكر (Tickets)</div>
+                  <div className="font-bold text-primary">{weights.tickets || 0}%</div>
+                </div>
               </div>
             </div>
 
-            <DialogFooter className="mt-3">
-              <Button size="sm" onClick={() => setGuideOpen(false)}>فهمت (Close Guide)</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            {/* Card 2: NMV% */}
+            <div className="p-3 rounded-lg border bg-card space-y-1.5">
+              <h4 className="font-bold text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4" /> 2. نسبة التسليم المالي (NMV%)
+              </h4>
+              <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
+                NMV% = (∑ NMV ÷ ∑ OFD_VALUE) × 100
+              </div>
+              <p>
+                <strong>طريقة حساب السكور:</strong> (NMV% المخزن ÷ Benchmark) × 100.
+              </p>
+              <p className="text-muted-foreground">
+                <strong>مثال:</strong> مخزن حقق NMV% بقيمة 97.87%، وكان الـ Benchmark هو 99.50%، فإن سكور المؤشر = (97.87 ÷ 99.50) × 100 = <strong>98.36%</strong>. يساهم في الإجمالي بـ: 98.36% × {weights.nmvPct}% = <strong>+{(98.36 * (weights.nmvPct / 100)).toFixed(2)} نقطة</strong>.
+              </p>
+            </div>
 
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Warehouse className="h-4 w-4" />
-          <span>{rows.length} warehouses</span>
-          <span className="opacity-60">
-            | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}% · Deficits {weights.deficits}%
-          </span>
-        </div>
+            {/* Card 3: Productivity 5 Factors */}
+            <div className="p-3 rounded-lg border bg-card space-y-2">
+              <h4 className="font-bold text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                <Calculator className="h-4 w-4" /> 3. مؤشرات الإنتاجية الـ 5 (Productivity) — وزن إجمالي {weights.productivity}%
+              </h4>
+              <div className="space-y-1.5 pl-2 border-l-2 border-primary/30">
+                <div>
+                  <strong>• Avg Value (متوسط قيمة الرحلة):</strong> ∑ OFD_VALUE ÷ عدد الـ Run Sheets.
+                </div>
+                <div>
+                  <strong>• Avg Orders (متوسط طلبات الرحلة):</strong> ∑ OFD_ORDERS ÷ عدد الـ Run Sheets.
+                </div>
+                <div>
+                  <strong>• Avg Weight (متوسط وزن الرحلة):</strong> ∑ WEIGHT ÷ عدد الـ Run Sheets.
+                </div>
+                <div>
+                  <strong>• Orders/Hour (معدل الطلبات بالساعة):</strong> ∑ OFD_ORDERS ÷ ∑ TRIP_TIME_HRS.
+                </div>
+                <div>
+                  <strong>• Weight/Hour (معدل الوزن بالساعة):</strong> ∑ WEIGHT ÷ ∑ TRIP_TIME_HRS.
+                </div>
+              </div>
+              <p className="text-muted-foreground bg-muted/50 p-2 rounded">
+                <strong>مثال عملي (Avg Value):</strong> مخزن الشرقية حقق متوسط 77,768 جنيه/رحلة، وأعلى مخزن (المنصورة) حقق 97,510 جنيه/رحلة. السكور = (77,768 ÷ 97,510) × 100 = <strong>79.75%</strong>. النقاط المكتسبة = 79.75% × {(weights.productivity / 5).toFixed(1)}% = <strong>+{(79.75 * ((weights.productivity / 5) / 100)).toFixed(2)} نقطة</strong>.
+              </p>
+            </div>
 
-        <div className="border rounded-lg overflow-auto max-h-[72vh]">
-          <table className="text-sm w-max min-w-full">
-            <thead className="sticky top-0 z-20">
-              <tr>
-                <th rowSpan={2} className="table-header-cell sticky left-0 z-30 min-w-[60px] text-center">#</th>
-                <th rowSpan={2} className="table-header-cell sticky left-[60px] z-30 min-w-[220px] text-left">Warehouse</th>
-                <th rowSpan={2} className="table-header-cell text-center min-w-[130px]">
-                  {NMV_FACTOR.label}
-                  <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
-                </th>
-                <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
-                  Productivity
-                  <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
-                </th>
-                <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
-                  Deficits
-                  <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
-                </th>
-                <th rowSpan={2} className="table-header-cell text-center min-w-[110px] border-r-2 border-primary-foreground/40">
-                  Tickets
-                  <span className="block text-[10px] font-normal opacity-70">Count</span>
-                </th>
-                <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
-              </tr>
-              <tr>
-                {PRODUCTIVITY_FACTORS.map((f, idx) => (
-                  <th
-                    key={f.key}
-                    className={`table-header-cell text-center min-w-[125px] ${
-                      idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-primary-foreground/40' : ''
-                    }`}
-                  >
-                    {f.label}
-                    <span className="block text-[10px] font-normal opacity-70">
-                      {(weights.productivity / PRODUCTIVITY_FACTORS.length).toFixed(1)}%
-                    </span>
-                  </th>
-                ))}
-                <th className="table-header-cell text-center min-w-[135px]">
-                  Pending Deficit
-                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
-                </th>
-                <th className="table-header-cell text-center min-w-[135px]">
-                  Damage Deficit
-                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
-                </th>
-                <th className="table-header-cell text-center min-w-[135px] border-r-2 border-primary-foreground/40">
-                  Extra Deficit
-                  <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => {
-                const prodWeightPerFactor = weights.productivity / PRODUCTIVITY_FACTORS.length;
-                return (
-                  <tr key={r.warehouse} className="hover:bg-muted/50">
-                    <td className="table-cell sticky left-0 bg-card z-10 text-center font-medium">{i + 1}</td>
-                    <td className="table-cell sticky left-[60px] bg-card z-10 font-medium">{r.warehouse}</td>
+            {/* Card 4: Deficits */}
+            <div className="p-3 rounded-lg border bg-card space-y-2">
+              <h4 className="font-bold text-sm text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                <ShieldCheck className="h-4 w-4" /> 4. مؤشرات العجوزات (Deficits) — وزن إجمالي {weights.deficits}%
+              </h4>
+              <p>
+                العجوزات مؤشر خسارة (Negative Metric). المخزن صاحب العجز الأقل هو الأفضل.
+              </p>
+              <div className="space-y-1 font-mono text-[11px] bg-muted p-2 rounded">
+                <div>• Pending Deficit = مجموع PENDING_VALUE (حيث المسؤولية Liability = Courier)</div>
+                <div>• Damage Deficit = مجموع DAMAGE_VALUE (حيث المسؤولية Liability = Courier)</div>
+                <div>• Extra Deficit = مجموع EXTRA_VALUE (حيث المسؤولية Liability = Courier)</div>
+                <div>• Total Deficit = Pending + Damage + Extra</div>
+              </div>
+              <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
+                Deficit Score = (1 - (Total Deficit ÷ Max Deficit Benchmark)) × 100
+              </div>
+              <p className="text-muted-foreground">
+                <strong>مثال:</strong> إذا كان عجز المخزن 500 جنيه، وأعلى عجز سجله أسوأ مخزن هو 35,000 جنيه: السكور = (1 - 500 ÷ 35,000) × 100 = <strong>98.57%</strong>. وإذا كان العجز 0 جنيه يأخذ <strong>100% كاملة</strong>.
+              </p>
+            </div>
 
-                    {/* NMV% Cell with Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span className="font-medium text-foreground">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</span>
-                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                            ({r.scores[NMV_FACTOR.key].toFixed(1)}%)
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                        <div className="font-bold text-primary border-b pb-1">NMV% • {r.warehouse}</div>
-                        <div><strong>Actual Value:</strong> {r.values.nmvPct.toFixed(2)}% ({r.nmv.toLocaleString()} EGP NMV ÷ {r.ofd.toLocaleString()} EGP OFD)</div>
-                        <div><strong>Benchmark ({r.benchmark.nmvPct.isManual ? 'Manual Target' : 'Top Warehouse'}):</strong> {r.benchmark.nmvPct.label}</div>
-                        <div><strong>Factor Score:</strong> ({r.values.nmvPct.toFixed(2)}% ÷ {r.benchmark.nmvPct.value.toFixed(1)}%) × 100 = <strong>{r.scores.nmvPct.toFixed(1)}%</strong></div>
-                        <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {r.scores.nmvPct.toFixed(1)}% × {weights.nmvPct}% Weight = +{r.nmvPoints.toFixed(2)} pts</div>
-                      </TooltipContent>
-                    </Tooltip>
+            {/* Card 5: Tickets */}
+            <div className="p-3 rounded-lg border bg-card space-y-1.5">
+              <h4 className="font-bold text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                <AlertTriangle className="h-4 w-4" /> 5. تذاكر الدعم والشكاوى (Support Tickets)
+              </h4>
+              <p>
+                يتم سحب التذاكر من شيت <strong>Ecommerce Max Support Tickets</strong> بناءً على عمود <strong>WAREHOUSE</strong> وتاريخ <strong>DAT</strong> في الفترة المحددة، وعمل <strong>COUNT</strong> لإجمالي عدد التذاكر المسجلة للمخزن.
+              </p>
+              <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
+                Tickets Score = (1 - (Warehouse Tickets ÷ Max Tickets Benchmark)) × 100
+              </div>
+            </div>
 
-                    {/* Productivity Cells with Tooltips */}
-                    {PRODUCTIVITY_FACTORS.map((f, idx) => {
-                      const factorScore = r.scores[f.key];
-                      const factorPts = (factorScore * (prodWeightPerFactor / 100));
-                      let formulaText = '';
-                      if (f.key === 'avgValue') formulaText = `${r.ofd.toLocaleString()} EGP OFD ÷ ${r.runSheets} Run Sheets = ${r.values.avgValue.toLocaleString()} EGP`;
-                      else if (f.key === 'avgOrders') formulaText = `${r.orders.toLocaleString()} OFD Orders ÷ ${r.runSheets} Run Sheets = ${r.values.avgOrders.toFixed(2)} Orders`;
-                      else if (f.key === 'avgWeight') formulaText = `${r.weight.toLocaleString()} KG Weight ÷ ${r.runSheets} Run Sheets = ${r.values.avgWeight.toLocaleString()} KG`;
-                      else if (f.key === 'ordersPerHour') formulaText = `${r.orders.toLocaleString()} OFD Orders ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.ordersPerHour.toFixed(2)} Orders/hr`;
-                      else if (f.key === 'weightPerHour') formulaText = `${r.weight.toLocaleString()} KG Weight ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.weightPerHour.toFixed(1)} KG/hr`;
+            {/* Card 6: Total Score Formula */}
+            <div className="p-3 rounded-lg border bg-primary/10 border-primary/30 space-y-1.5">
+              <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
+                🏆 6. معادلة التقييم النهائي الإجمالي (Total Performance %)
+              </h4>
+              <div className="font-mono text-[11px] p-2 bg-background rounded border">
+                Total Performance = (NMV_Score × {weights.nmvPct}%) + (Productivity_Avg_Score × {weights.productivity}%) + (Deficits_Score × {weights.deficits}%) + (Tickets_Score × {weights.tickets || 0}%)
+              </div>
+              <p className="text-muted-foreground text-[11px]">
+                حيث أن Productivity_Avg_Score هو متوسط سكورات مؤشرات الإنتاجية الـ 5.
+              </p>
+            </div>
+          </div>
 
-                      return (
-                        <Tooltip key={f.key}>
-                          <TooltipTrigger asChild>
-                            <td
-                              className={`table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors ${
-                                idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-border/80' : ''
-                              }`}
-                            >
-                              <span className="font-medium text-foreground">{f.fmt(r.values[f.key])}</span>
-                              <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                                ({factorScore.toFixed(1)}%)
-                              </span>
-                            </td>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                            <div className="font-bold text-primary border-b pb-1">{f.label} • {r.warehouse}</div>
-                            <div><strong>Calculation:</strong> {formulaText}</div>
-                            <div><strong>Benchmark ({r.benchmark[f.key].isManual ? 'Manual Target' : 'Top Warehouse'}):</strong> {r.benchmark[f.key].label}</div>
-                            <div><strong>Factor Score:</strong> ({f.fmt(r.values[f.key])} ÷ {r.benchmark[f.key].value.toLocaleString()}) × 100 = <strong>{factorScore.toFixed(1)}%</strong></div>
-                            <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {factorScore.toFixed(1)}% × {prodWeightPerFactor.toFixed(1)}% Weight = +{factorPts.toFixed(2)} pts</div>
-                          </TooltipContent>
-                        </Tooltip>
-                      );
+          <DialogFooter className="mt-3">
+            <Button size="sm" onClick={() => setGuideOpen(false)}>فهمت (Close Guide)</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Warehouse className="h-4 w-4" />
+        <span>{rows.length} warehouses</span>
+        <span className="opacity-60">
+          | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}% · Deficits {weights.deficits}%{weights.tickets > 0 ? ` · Tickets ${weights.tickets}%` : ''}
+        </span>
+      </div>
+
+      <div className="border rounded-lg overflow-auto max-h-[72vh]">
+        <table className="text-sm w-max min-w-full">
+          <thead className="sticky top-0 z-20">
+            <tr>
+              <th rowSpan={2} className="table-header-cell sticky left-0 z-30 min-w-[60px] text-center">#</th>
+              <th rowSpan={2} className="table-header-cell sticky left-[60px] z-30 min-w-[220px] text-left">Warehouse</th>
+              <th rowSpan={2} className="table-header-cell text-center min-w-[130px]">
+                {NMV_FACTOR.label}
+                <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
+              </th>
+              <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
+                Productivity
+                <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
+              </th>
+              <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
+                Deficits
+                <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
+              </th>
+              <th rowSpan={2} className="table-header-cell text-center min-w-[110px] border-r-2 border-primary-foreground/40">
+                Tickets
+                <span className="block text-[10px] font-normal opacity-70">{weights.tickets > 0 ? `${weights.tickets}%` : 'Count'}</span>
+              </th>
+              <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
+            </tr>
+            <tr>
+              {PRODUCTIVITY_FACTORS.map((f, idx) => (
+                <th
+                  key={f.key}
+                  className={`table-header-cell text-center min-w-[125px] ${
+                    idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-primary-foreground/40' : ''
+                  }`}
+                >
+                  {f.label}
+                  <span className="block text-[10px] font-normal opacity-70">
+                    {(weights.productivity / PRODUCTIVITY_FACTORS.length).toFixed(1)}%
+                  </span>
+                </th>
+              ))}
+              <th className="table-header-cell text-center min-w-[135px]">
+                Pending Deficit
+                <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+              </th>
+              <th className="table-header-cell text-center min-w-[135px]">
+                Damage Deficit
+                <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+              </th>
+              <th className="table-header-cell text-center min-w-[135px] border-r-2 border-primary-foreground/40">
+                Extra Deficit
+                <span className="block text-[10px] font-normal opacity-70">Part of {weights.deficits}%</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const prodWeightPerFactor = weights.productivity / PRODUCTIVITY_FACTORS.length;
+              return (
+                <tr key={r.warehouse} className="hover:bg-muted/50">
+                  <td className="table-cell sticky left-0 bg-card z-10 text-center font-medium">{i + 1}</td>
+                  <td className="table-cell sticky left-[60px] bg-card z-10 font-medium">{r.warehouse}</td>
+
+                  {/* NMV% Cell with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'NMV% (نسبة التسليم المالي)',
+                      warehouse: r.warehouse,
+                      actualLabel: 'نسبة NMV% المحققة',
+                      actualValue: `${r.values.nmvPct.toFixed(2)}%`,
+                      formula: `NMV: ${r.nmv.toLocaleString()} EGP ÷ OFD: ${r.ofd.toLocaleString()} EGP = ${r.values.nmvPct.toFixed(2)}%`,
+                      benchmarkLabel: r.benchmark.nmvPct.isManual ? 'المستهدف اليدوي' : 'أعلى مخزن تم تحقيقه',
+                      benchmarkValue: r.benchmark.nmvPct.label,
+                      scoreText: `(${r.values.nmvPct.toFixed(2)}% ÷ ${r.benchmark.nmvPct.value.toFixed(2)}%) × 100 = ${r.scores.nmvPct.toFixed(1)}%`,
+                      scorePct: r.scores.nmvPct,
+                      weightLabel: 'وزن المؤشر في التقييم',
+                      weightPct: weights.nmvPct,
+                      pointsEarned: r.nmvPoints,
+                      explanation: `تمت مقارنة نسبة التسليم المالي للمخزن (${r.values.nmvPct.toFixed(2)}%) بالـ Benchmark (${r.benchmark.nmvPct.value.toFixed(2)}%)، وحصل المخزن على سكور ${r.scores.nmvPct.toFixed(1)}% ليساهم بـ +${r.nmvPoints.toFixed(2)} نقطة في الإجمالي.`,
                     })}
+                    className="table-cell text-center whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span className="font-medium text-foreground">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</span>
+                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                      ({r.scores[NMV_FACTOR.key].toFixed(1)}%)
+                    </span>
+                  </td>
 
-                    {/* Pending Deficit with Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-right font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span>{r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
-                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                            ({r.pendingScore.toFixed(1)}%)
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                        <div className="font-bold text-amber-500 border-b pb-1">Pending Deficit • {r.warehouse}</div>
-                        <div><strong>Actual Value:</strong> {r.pendingDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
-                        <div><strong>Category Score:</strong> Lower is better (0 EGP = 100%). Score: <strong>{r.pendingScore.toFixed(1)}%</strong></div>
-                      </TooltipContent>
-                    </Tooltip>
+                  {/* Productivity Cells with Click Details */}
+                  {PRODUCTIVITY_FACTORS.map((f, idx) => {
+                    const factorScore = r.scores[f.key];
+                    const factorPts = (factorScore * (prodWeightPerFactor / 100));
+                    let formulaText = '';
+                    if (f.key === 'avgValue') formulaText = `OFD Value: ${r.ofd.toLocaleString()} EGP ÷ ${r.runSheets} Run Sheets = ${r.values.avgValue.toLocaleString()} EGP`;
+                    else if (f.key === 'avgOrders') formulaText = `OFD Orders: ${r.orders.toLocaleString()} ÷ ${r.runSheets} Run Sheets = ${r.values.avgOrders.toFixed(2)} Orders`;
+                    else if (f.key === 'avgWeight') formulaText = `Total Weight: ${r.weight.toLocaleString()} KG ÷ ${r.runSheets} Run Sheets = ${r.values.avgWeight.toLocaleString()} KG`;
+                    else if (f.key === 'ordersPerHour') formulaText = `OFD Orders: ${r.orders.toLocaleString()} ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.ordersPerHour.toFixed(2)} Orders/hr`;
+                    else if (f.key === 'weightPerHour') formulaText = `Total Weight: ${r.weight.toLocaleString()} KG ÷ ${r.tripTimeHrs.toFixed(1)} Trip Hours = ${r.values.weightPerHour.toFixed(1)} KG/hr`;
 
-                    {/* Damage Deficit with Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-right font-medium text-rose-600 dark:text-rose-400 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span>{r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
-                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                            ({r.damageScore.toFixed(1)}%)
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                        <div className="font-bold text-rose-500 border-b pb-1">Damage Deficit • {r.warehouse}</div>
-                        <div><strong>Actual Value:</strong> {r.damageDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
-                        <div><strong>Category Score:</strong> Lower is better (0 EGP = 100%). Score: <strong>{r.damageScore.toFixed(1)}%</strong></div>
-                      </TooltipContent>
-                    </Tooltip>
+                    return (
+                      <td
+                        key={f.key}
+                        onClick={() => setCellDetail({
+                          title: `${f.label} (مؤشر إنتاجية)`,
+                          warehouse: r.warehouse,
+                          actualLabel: `قيمة ${f.label} المحققة`,
+                          actualValue: f.fmt(r.values[f.key]),
+                          formula: formulaText,
+                          benchmarkLabel: r.benchmark[f.key].isManual ? 'المستهدف اليدوي' : 'أعلى مخزن تم تحقيقه',
+                          benchmarkValue: r.benchmark[f.key].label,
+                          scoreText: `(${f.fmt(r.values[f.key])} ÷ ${r.benchmark[f.key].value.toLocaleString()}) × 100 = ${factorScore.toFixed(1)}%`,
+                          scorePct: factorScore,
+                          weightLabel: 'حصة المؤشر من وزن الإنتاجية',
+                          weightPct: prodWeightPerFactor,
+                          pointsEarned: factorPts,
+                          explanation: `تم قسمة أداء المخزن على الـ Benchmark (${r.benchmark[f.key].label}) للحصول على سكور ${factorScore.toFixed(1)}%، ومساهمة +${factorPts.toFixed(2)} نقطة في التقييم الكلي.`,
+                        })}
+                        className={`table-cell text-center whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors ${
+                          idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-border/80' : ''
+                        }`}
+                      >
+                        <span className="font-medium text-foreground">{f.fmt(r.values[f.key])}</span>
+                        <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                          ({factorScore.toFixed(1)}%)
+                        </span>
+                      </td>
+                    );
+                  })}
 
-                    {/* Extra Deficit with Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span>{r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
-                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                            ({r.extraScore.toFixed(1)}%)
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                        <div className="font-bold text-red-500 border-b pb-1">Extra Deficit & Total Deficit Pool • {r.warehouse}</div>
-                        <div><strong>Extra Deficit:</strong> {r.extraDeficit.toLocaleString()} EGP (where Liability = Courier)</div>
-                        <div><strong>Total Combined Deficit:</strong> {r.totalDeficit.toLocaleString()} EGP (Pending + Damage + Extra)</div>
-                        <div><strong>Deficit Benchmark Max:</strong> {r.benchmarkMaxDeficit.toLocaleString()} EGP</div>
-                        <div><strong>Total Deficit Pool Score:</strong> (1 - {r.totalDeficit.toLocaleString()} ÷ {r.benchmarkMaxDeficit.toLocaleString()}) × 100 = <strong>{r.deficitScore.toFixed(1)}%</strong></div>
-                        <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {r.deficitScore.toFixed(1)}% × {weights.deficits}% Weight = +{r.defPoints.toFixed(2)} pts</div>
-                      </TooltipContent>
-                    </Tooltip>
+                  {/* Pending Deficit with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'Pending Deficit (عجز المعلقات)',
+                      warehouse: r.warehouse,
+                      actualLabel: 'إجمالي قيمة عجز المعلقات',
+                      actualValue: `${r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2 })} EGP`,
+                      formula: `∑ PENDING_VALUE من شيت Pending بشرط Liability = Courier`,
+                      benchmarkLabel: 'المقياس (مؤشر سلبي)',
+                      benchmarkValue: 'العجز = 0 يأخذ 100%',
+                      scoreText: `سكور الفئة: ${r.pendingScore.toFixed(1)}%`,
+                      scorePct: r.pendingScore,
+                      weightLabel: 'مجموعة العجوزات (Deficit Pool)',
+                      weightPct: weights.deficits,
+                      pointsEarned: r.defPoints,
+                      explanation: `كلما قل عجز المعلقات كان الأداء أفضل. المخزن الذي ليس لديه أي عجز معلقات يحصل على 100%.`,
+                    })}
+                    className="table-cell text-right font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span>{r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                      ({r.pendingScore.toFixed(1)}%)
+                    </span>
+                  </td>
 
-                    {/* Support Tickets Column with Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-center font-medium text-amber-600 dark:text-amber-400 border-r-2 border-border/80 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span>{r.tickets.toLocaleString()}</span>
-                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
-                            ({r.ticketsScore.toFixed(1)}%)
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
-                        <div className="font-bold text-amber-500 border-b pb-1">Support Tickets • {r.warehouse}</div>
-                        <div><strong>Tickets Count:</strong> {r.tickets.toLocaleString()} tickets in selected period</div>
-                        <div><strong>Source Sheet:</strong> Ecommerce Max Support Tickets</div>
-                        <div><strong>Filter:</strong> WAREHOUSE & DAT in date range</div>
-                        <div><strong>Relative Score:</strong> Lower is better (0 Tickets = 100%). Score: <strong>{r.ticketsScore.toFixed(1)}%</strong></div>
-                      </TooltipContent>
-                    </Tooltip>
+                  {/* Damage Deficit with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'Damage Deficit (عجز التوالف)',
+                      warehouse: r.warehouse,
+                      actualLabel: 'إجمالي قيمة عجز التوالف',
+                      actualValue: `${r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2 })} EGP`,
+                      formula: `∑ DAMAGE_VALUE من شيت Damage بشرط Liability = Courier`,
+                      benchmarkLabel: 'المقياس (مؤشر سلبي)',
+                      benchmarkValue: 'العجز = 0 يأخذ 100%',
+                      scoreText: `سكور الفئة: ${r.damageScore.toFixed(1)}%`,
+                      scorePct: r.damageScore,
+                      weightLabel: 'مجموعة العجوزات (Deficit Pool)',
+                      weightPct: weights.deficits,
+                      pointsEarned: r.defPoints,
+                      explanation: `المخزن الأقل في عجز التوالف يحصل على السكور الأعلى، ويحصل على 100% إذا كان عجز التوالف 0 جنيه.`,
+                    })}
+                    className="table-cell text-right font-medium text-rose-600 dark:text-rose-400 whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span>{r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                      ({r.damageScore.toFixed(1)}%)
+                    </span>
+                  </td>
 
-                    {/* Total Performance with Breakdown Tooltip */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <td className="table-cell text-center whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
-                          <span className={`inline-block px-2.5 py-0.5 rounded font-bold ${scoreColor(r.score)}`}>
-                            {r.score.toFixed(1)}%
-                          </span>
-                        </td>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-xs space-y-1.5 p-3">
-                        <div className="font-bold text-foreground border-b pb-1">Total Performance Score • {r.warehouse}</div>
-                        <div className="flex justify-between"><span>NMV% Contribution ({weights.nmvPct}%):</span> <strong>+{r.nmvPoints.toFixed(2)} pts</strong></div>
-                        <div className="flex justify-between"><span>Productivity Contribution ({weights.productivity}%):</span> <strong>+{r.prodPoints.toFixed(2)} pts</strong></div>
-                        <div className="flex justify-between"><span>Deficits Contribution ({weights.deficits}%):</span> <strong>+{r.defPoints.toFixed(2)} pts</strong></div>
-                        <div className="border-t pt-1 flex justify-between font-bold text-primary text-sm">
-                          <span>Final Total Score:</span>
-                          <span>{r.score.toFixed(1)}%</span>
-                        </div>
-                      </TooltipContent>
-                    </Tooltip>
-                  </tr>
-                );
-              })}
-              {!rows.length && (
-                <tr>
-                  <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1 + 1} className="table-cell text-center text-muted-foreground py-8">
-                    No warehouse data for the selected period
+                  {/* Extra Deficit with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'Extra Deficit & Total Deficit Pool',
+                      warehouse: r.warehouse,
+                      actualLabel: 'إجمالي العجوزات (Pending + Damage + Extra)',
+                      actualValue: `${r.totalDeficit.toLocaleString('en-US', { minimumFractionDigits: 2 })} EGP`,
+                      formula: `Pending (${r.pendingDeficit.toFixed(2)}) + Damage (${r.damageDeficit.toFixed(2)}) + Extra (${r.extraDeficit.toFixed(2)}) = ${r.totalDeficit.toFixed(2)} EGP`,
+                      benchmarkLabel: 'الحد الأقصى للعجز (Max Deficit)',
+                      benchmarkValue: `${r.benchmarkMaxDeficit.toLocaleString()} EGP`,
+                      scoreText: `(1 - ${r.totalDeficit.toFixed(2)} ÷ ${r.benchmarkMaxDeficit.toFixed(2)}) × 100 = ${r.deficitScore.toFixed(1)}%`,
+                      scorePct: r.deficitScore,
+                      weightLabel: 'وزن العجوزات الإجمالي',
+                      weightPct: weights.deficits,
+                      pointsEarned: r.defPoints,
+                      explanation: `يتم تجميع كل أنواع العجوزات ومقارنتها بأقصى عجز في الفترة (${r.benchmarkMaxDeficit.toLocaleString()} جنيه). سكور العجوزات المكتسب هو ${r.deficitScore.toFixed(1)}% ليساهم بـ +${r.defPoints.toFixed(2)} نقطة.`,
+                    })}
+                    className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80 whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span>{r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}</span>
+                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                      ({r.extraScore.toFixed(1)}%)
+                    </span>
+                  </td>
+
+                  {/* Support Tickets Column with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'Support Tickets (تذاكر الدعم والشكاوى)',
+                      warehouse: r.warehouse,
+                      actualLabel: 'عدد التذاكر المسجلة في الفترة',
+                      actualValue: `${r.tickets.toLocaleString()} تذكرة`,
+                      formula: `Count للتذاكر من شيت Ecommerce Max Support Tickets المربوطة بـ ${r.warehouse}`,
+                      benchmarkLabel: 'الحد الأقصى للتذاكر (Max Tickets)',
+                      benchmarkValue: `${r.benchmarkMaxTickets.toLocaleString()} تذكرة`,
+                      scoreText: `(1 - ${r.tickets} ÷ ${r.benchmarkMaxTickets}) × 100 = ${r.ticketsScore.toFixed(1)}%`,
+                      scorePct: r.ticketsScore,
+                      weightLabel: 'وزن التذاكر في التقييم',
+                      weightPct: weights.tickets || 0,
+                      pointsEarned: r.ticketsPoints,
+                      explanation: `كلما قل عدد التذاكر للمخزن كان مؤشر الجودة أفضل. إذا كان وزن التذاكر أكبر من 0%، فإن السكور يساهم بـ +${r.ticketsPoints.toFixed(2)} نقطة في الإجمالي.`,
+                    })}
+                    className="table-cell text-center font-medium text-amber-600 dark:text-amber-400 border-r-2 border-border/80 whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span>{r.tickets.toLocaleString()}</span>
+                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                      ({r.ticketsScore.toFixed(1)}%)
+                    </span>
+                  </td>
+
+                  {/* Total Performance with Click Details */}
+                  <td
+                    onClick={() => setCellDetail({
+                      title: 'Total Performance Score (التقييم الإجمالي)',
+                      warehouse: r.warehouse,
+                      actualLabel: 'السكور النهائي المكتسب',
+                      actualValue: `${r.score.toFixed(1)}%`,
+                      formula: `NMV (${r.nmvPoints.toFixed(2)}) + Productivity (${r.prodPoints.toFixed(2)}) + Deficits (${r.defPoints.toFixed(2)})${weights.tickets > 0 ? ` + Tickets (${r.ticketsPoints.toFixed(2)})` : ''} = ${r.score.toFixed(1)}%`,
+                      benchmarkLabel: 'الهدف الكلي',
+                      benchmarkValue: '100% Performance',
+                      scoreText: `إجمالي النقاط المكتسبة: ${r.score.toFixed(1)} / 100`,
+                      scorePct: r.score,
+                      weightLabel: 'إجمالي الأوزان',
+                      weightPct: 100,
+                      pointsEarned: r.score,
+                      explanation: `التقييم الإجمالي يمثل مجموع النقاط المكتسبة من كل الفئات بناءً على أوزانها المحددة.`,
+                    })}
+                    className="table-cell text-center whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
+                  >
+                    <span className={`inline-block px-2.5 py-0.5 rounded font-bold ${scoreColor(r.score)}`}>
+                      {r.score.toFixed(1)}%
+                    </span>
                   </td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+            {!rows.length && (
+              <tr>
+                <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1 + 1} className="table-cell text-center text-muted-foreground py-8">
+                  No warehouse data for the selected period
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
-    </TooltipProvider>
+    </div>
   );
 }

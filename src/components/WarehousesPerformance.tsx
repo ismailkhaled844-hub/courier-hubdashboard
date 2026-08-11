@@ -52,7 +52,6 @@ const DEFAULT_WEIGHTS: Record<FactorKey, number> = {
 };
 
 const WEIGHTS_KEY = 'warehouse-perf-weights';
-const HOURS_KEY = 'warehouse-perf-shift-hours';
 
 function defaultRange() {
   const now = new Date();
@@ -65,11 +64,6 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
   const def = defaultRange();
   const [fromDate, setFromDate] = useState<Date | undefined>(def.from);
   const [toDate, setToDate] = useState<Date | undefined>(def.to);
-  const [shiftHours, setShiftHours] = useState<number>(() => {
-    const raw = localStorage.getItem(HOURS_KEY);
-    const n = raw ? parseFloat(raw) : NaN;
-    return isNaN(n) || n <= 0 ? 9 : n;
-  });
   const [weights, setWeights] = useState<Record<FactorKey, number>>(() => {
     try {
       const raw = localStorage.getItem(WEIGHTS_KEY);
@@ -81,7 +75,6 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
   const [open, setOpen] = useState(false);
 
   useEffect(() => { localStorage.setItem(WEIGHTS_KEY, JSON.stringify(weights)); }, [weights]);
-  useEffect(() => { localStorage.setItem(HOURS_KEY, String(shiftHours)); }, [shiftHours]);
 
   const inRange = (value: string) => {
     if (!value) return false;
@@ -174,7 +167,6 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
     const base = [...agg.entries()]
       .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0)
       .map(([wh, a]) => {
-        const fallbackHours = a.days * shiftHours;
         const hasRunSheets = a.runSheets > 0;
         const values: Record<FactorKey, number> = {
           // 1. NMV% = (∑ NMV / ∑ OFD_VALUE) * 100
@@ -186,9 +178,9 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
           // 4. Avg Weight = ∑ WEIGHT / Run Sheets
           avgWeight: hasRunSheets ? safeDiv(a.fleetWeight, a.runSheets) : safeDiv(a.weight, a.days),
           // 5. Orders/Hour = ∑ OFD_ORDERS / ∑ TRIP_TIME_HRS
-          ordersPerHour: a.tripTimeHrs > 0 ? safeDiv(a.ofdOrders, a.tripTimeHrs) : safeDiv(a.orders, fallbackHours),
+          ordersPerHour: safeDiv(a.ofdOrders, a.tripTimeHrs),
           // 6. Weight/Hour = ∑ WEIGHT / ∑ TRIP_TIME_HRS
-          weightPerHour: a.tripTimeHrs > 0 ? safeDiv(a.fleetWeight, a.tripTimeHrs) : safeDiv(a.weight, fallbackHours),
+          weightPerHour: safeDiv(a.fleetWeight, a.tripTimeHrs),
         };
         return {
           warehouse: wh,
@@ -217,7 +209,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         return { ...b, score: safeDiv(score, 1) };
       })
       .sort((a, b) => b.score - a.score);
-  }, [salaryData, reconData, onDemandData, fleetOpData, fromDate, toDate, weights, shiftHours]);
+  }, [salaryData, reconData, onDemandData, fleetOpData, fromDate, toDate, weights]);
 
   const draftTotal = FACTORS.reduce((s, f) => s + (draft[f.key] || 0), 0);
 
@@ -263,17 +255,6 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       <div className="flex flex-wrap items-center gap-3 justify-between">
         <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>Shift hours</span>
-            <Input
-              type="number"
-              min={1}
-              step={0.5}
-              value={shiftHours}
-              onChange={e => setShiftHours(Math.max(0.5, parseFloat(e.target.value) || 0.5))}
-              className="h-9 w-20"
-            />
-          </div>
           <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) setDraft(weights); }}>
             <DialogTrigger asChild>
               <Button variant="outline" size="sm">

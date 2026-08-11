@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, SalaryRow } from '@/lib/google-sheets';
+import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, fetchDamageData, fetchExtraData, SalaryRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import CourierDailyPerformance from './CourierDailyPerformance';
 import CourierFinancialDetails from './CourierFinancialDetails';
@@ -228,6 +228,20 @@ export default function Dashboard() {
   const { data: pendingData } = useQuery({
     queryKey: ['pending-data'],
     queryFn: fetchPendingData,
+    staleTime: 0,
+    refetchInterval: 30000,
+  });
+
+  const { data: damageData } = useQuery({
+    queryKey: ['damage-data'],
+    queryFn: fetchDamageData,
+    staleTime: 0,
+    refetchInterval: 30000,
+  });
+
+  const { data: extraData } = useQuery({
+    queryKey: ['extra-data'],
+    queryFn: fetchExtraData,
     staleTime: 0,
     refetchInterval: 30000,
   });
@@ -533,7 +547,15 @@ export default function Dashboard() {
         ) : activeTab === 'capacity' ? (
           <CapacityTab />
         ) : activeTab === 'warehouses' ? (
-          <WarehousesPerformance salaryData={salaryData || []} reconData={reconData || []} onDemandData={onDemandData || []} fleetOpData={fleetOpData || []} pendingData={pendingData || []} />
+          <WarehousesPerformance
+            salaryData={salaryData || []}
+            reconData={reconData || []}
+            onDemandData={onDemandData || []}
+            fleetOpData={fleetOpData || []}
+            pendingData={pendingData || []}
+            damageData={damageData || []}
+            extraData={extraData || []}
+          />
         ) : (
           <>
             {activeTab === 'daily' && <CourierDailyPerformance data={filteredSalary} allData={salaryData || []} />}

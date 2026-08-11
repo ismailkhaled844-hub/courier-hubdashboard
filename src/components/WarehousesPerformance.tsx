@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow } from '@/lib/google-sheets';
+import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow, DamageRow, ExtraRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
@@ -14,6 +14,8 @@ interface Props {
   onDemandData?: OnDemandRow[];
   fleetOpData?: FleetOpRow[];
   pendingData?: PendingRow[];
+  damageData?: DamageRow[];
+  extraData?: ExtraRow[];
 }
 
 type FactorKey = 'nmvPct' | 'avgValue' | 'avgOrders' | 'avgWeight' | 'ordersPerHour' | 'weightPerHour';
@@ -21,6 +23,7 @@ type FactorKey = 'nmvPct' | 'avgValue' | 'avgOrders' | 'avgWeight' | 'ordersPerH
 interface PerformanceWeights {
   nmvPct: number;
   productivity: number;
+  deficits: number;
 }
 
 const fmtNum = (v: number, maxDigits: number = 1) => {
@@ -50,10 +53,11 @@ const FACTORS: { key: FactorKey; label: string; fmt: (v: number) => string }[] =
 
 const DEFAULT_WEIGHTS: PerformanceWeights = {
   nmvPct: 20,
-  productivity: 80,
+  productivity: 60,
+  deficits: 20,
 };
 
-const WEIGHTS_KEY = 'warehouse-perf-weights-v2';
+const WEIGHTS_KEY = 'warehouse-perf-weights-v3';
 
 function defaultRange() {
   const now = new Date();
@@ -62,7 +66,15 @@ function defaultRange() {
 
 const INACTIVE_STATUSES = new Set(['NO_SHOW', 'OFF', 'Annual-Leave', 'Sick-Leave', 'Unpaid-Leave']);
 
-export default function WarehousesPerformance({ salaryData, reconData, onDemandData = [], fleetOpData = [], pendingData = [] }: Props) {
+export default function WarehousesPerformance({
+  salaryData,
+  reconData,
+  onDemandData = [],
+  fleetOpData = [],
+  pendingData = [],
+  damageData = [],
+  extraData = [],
+}: Props) {
   const def = defaultRange();
   const [fromDate, setFromDate] = useState<Date | undefined>(def.from);
   const [toDate, setToDate] = useState<Date | undefined>(def.to);
@@ -71,7 +83,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       const raw = localStorage.getItem(WEIGHTS_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (typeof parsed.nmvPct === 'number' && typeof parsed.productivity === 'number') {
+        if (typeof parsed.nmvPct === 'number' && typeof parsed.productivity === 'number' && typeof parsed.deficits === 'number') {
           return parsed;
         }
       }
@@ -111,9 +123,26 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       fleetWeight: number;
       tripTimeHrs: number;
       pendingDeficit: number;
+      damageDeficit: number;
+      extraDeficit: number;
     }>();
     const get = (wh: string) => {
-      if (!agg.has(wh)) agg.set(wh, { orders: 0, weight: 0, days: 0, nmv: 0, ofd: 0, runSheets: 0, ofdOrders: 0, fleetWeight: 0, tripTimeHrs: 0, pendingDeficit: 0 });
+      if (!agg.has(wh)) {
+        agg.set(wh, {
+          orders: 0,
+          weight: 0,
+          days: 0,
+          nmv: 0,
+          ofd: 0,
+          runSheets: 0,
+          ofdOrders: 0,
+          fleetWeight: 0,
+          tripTimeHrs: 0,
+          pendingDeficit: 0,
+          damageDeficit: 0,
+          extraDeficit: 0,
+        });
+      }
       return agg.get(wh)!;
     };
 
@@ -171,21 +200,41 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
       });
     }
 
-    // Pending Deficit per warehouse (LIABILITY_ON = 'Courier')
+    // 1. Pending Deficit per warehouse (LIABILITY_ON = 'Courier')
     if (pendingData && pendingData.length > 0) {
       pendingData.forEach(r => {
         if ((r.LIABILITY_ON || '').toLowerCase() !== 'courier') return;
         const wh = normalizeWarehouse(r.WAREHOUSE);
         if (!wh || !inRange(r.CREATED_AT)) return;
-        const a = get(wh);
-        a.pendingDeficit += r.PENDING_VALUE || 0;
+        get(wh).pendingDeficit += r.PENDING_VALUE || 0;
+      });
+    }
+
+    // 2. Damage Deficit per warehouse (LIABILITY_ON = 'Courier')
+    if (damageData && damageData.length > 0) {
+      damageData.forEach(r => {
+        if ((r.LIABILITY_ON || '').toLowerCase() !== 'courier') return;
+        const wh = normalizeWarehouse(r.WAREHOUSE);
+        if (!wh || !inRange(r.CREATED_AT)) return;
+        get(wh).damageDeficit += r.DAMAGE_VALUE || 0;
+      });
+    }
+
+    // 3. Extra Deficit per warehouse (PRODUCT_LIABILITY_TYPE = 'Courier')
+    if (extraData && extraData.length > 0) {
+      extraData.forEach(r => {
+        if ((r.PRODUCT_LIABILITY_TYPE || '').toLowerCase() !== 'courier') return;
+        const wh = normalizeWarehouse(r.WAREHOUSE);
+        if (!wh || !inRange(r.EXTRA_CREATION_DATE)) return;
+        get(wh).extraDeficit += r.EXTRA_VALUE || 0;
       });
     }
 
     const base = [...agg.entries()]
-      .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0)
+      .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0 || a.damageDeficit > 0 || a.extraDeficit > 0)
       .map(([wh, a]) => {
         const hasRunSheets = a.runSheets > 0;
+        const totalDeficit = (a.pendingDeficit || 0) + (a.damageDeficit || 0) + (a.extraDeficit || 0);
         const values: Record<FactorKey, number> = {
           // 1. NMV% = (∑ NMV / ∑ OFD_VALUE) * 100
           nmvPct: safeDiv(a.nmv, a.ofd) * 100,
@@ -210,6 +259,9 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
           runSheets: a.runSheets,
           tripTimeHrs: a.tripTimeHrs,
           pendingDeficit: a.pendingDeficit,
+          damageDeficit: a.damageDeficit,
+          extraDeficit: a.extraDeficit,
+          totalDeficit,
           values,
         };
       });
@@ -217,7 +269,8 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
     // Normalize each factor against the best performer (0-100)
     const max: Record<FactorKey, number> = {} as Record<FactorKey, number>;
     FACTORS.forEach(f => { max[f.key] = Math.max(0, ...base.map(b => b.values[f.key])); });
-    const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) || 1;
+    const maxTotalDeficit = Math.max(0, ...base.map(b => b.totalDeficit));
+    const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) + (weights.deficits || 0) || 1;
 
     return base
       .map(b => {
@@ -230,15 +283,20 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         }, 0);
         const prodNormAvg = prodNormSum / PRODUCTIVITY_FACTORS.length;
 
-        // Unified score: NMV% weight + Productivity weight
-        const score = (nmvNorm * ((weights.nmvPct || 0) / totalWeight)) + (prodNormAvg * ((weights.productivity || 0) / totalWeight));
+        // Deficit score: lower deficit is better (100 for 0 deficit, scales down to 0 for highest deficit)
+        const deficitScore = maxTotalDeficit > 0 ? Math.max(0, (1 - (b.totalDeficit / maxTotalDeficit)) * 100) : 100;
+
+        // Unified score: NMV% weight + Productivity weight + Deficits weight
+        const score = (nmvNorm * ((weights.nmvPct || 0) / totalWeight)) +
+                      (prodNormAvg * ((weights.productivity || 0) / totalWeight)) +
+                      (deficitScore * ((weights.deficits || 0) / totalWeight));
 
         return { ...b, score: safeDiv(score, 1) };
       })
       .sort((a, b) => b.score - a.score);
-  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, fromDate, toDate, weights]);
+  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, fromDate, toDate, weights]);
 
-  const draftTotal = (draft.nmvPct || 0) + (draft.productivity || 0);
+  const draftTotal = (draft.nmvPct || 0) + (draft.productivity || 0) + (draft.deficits || 0);
 
   const handleSave = () => {
     if (Math.round(draftTotal) !== 100) {
@@ -269,6 +327,9 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         'Orders/Hour': +r.values.ordersPerHour.toFixed(2),
         'Weight/Hour': +r.values.weightPerHour.toFixed(2),
         'Pending Deficit': +r.pendingDeficit.toFixed(2),
+        'Damage Deficit': +r.damageDeficit.toFixed(2),
+        'Extra Deficit': +r.extraDeficit.toFixed(2),
+        'Total Deficit': +r.totalDeficit.toFixed(2),
         'Total Performance %': +r.score.toFixed(2),
       })),
       'Warehouses_Performance'
@@ -292,7 +353,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Performance Weights</DialogTitle>
-                <DialogDescription>Set the relative weight for NMV% and Productivity. The total must equal 100%.</DialogDescription>
+                <DialogDescription>Set the relative weights for NMV%, Productivity, and Deficits. The total must equal 100%.</DialogDescription>
               </DialogHeader>
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
@@ -319,6 +380,18 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
                   />
                   <span className="text-sm text-muted-foreground">%</span>
                 </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 text-sm font-medium">Deficits</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={draft.deficits}
+                    onChange={e => setDraft({ ...draft, deficits: Math.max(0, parseFloat(e.target.value) || 0) })}
+                    className="h-9 w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
                 <div className={`text-sm font-semibold ${Math.round(draftTotal) === 100 ? 'text-success' : 'text-destructive'}`}>
                   Total: {draftTotal.toFixed(0)}% {Math.round(draftTotal) === 100 ? '' : '(must be 100%)'}
                 </div>
@@ -341,7 +414,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
         <Warehouse className="h-4 w-4" />
         <span>{rows.length} warehouses</span>
         <span className="opacity-60">
-          | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}%
+          | Weights: NMV% {weights.nmvPct}% · Productivity {weights.productivity}% · Deficits {weights.deficits}%
         </span>
       </div>
 
@@ -359,7 +432,10 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
                 Productivity
                 <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
               </th>
-              <th rowSpan={2} className="table-header-cell text-center min-w-[140px]">Pending Deficit</th>
+              <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20">
+                Deficits
+                <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
+              </th>
               <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
             </tr>
             <tr>
@@ -368,6 +444,9 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
                   {f.label}
                 </th>
               ))}
+              <th className="table-header-cell text-center min-w-[130px]">Pending Deficit</th>
+              <th className="table-header-cell text-center min-w-[130px]">Damage Deficit</th>
+              <th className="table-header-cell text-center min-w-[130px]">Extra Deficit</th>
             </tr>
           </thead>
           <tbody>
@@ -379,8 +458,14 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
                 {PRODUCTIVITY_FACTORS.map(f => (
                   <td key={f.key} className="table-cell text-center">{f.fmt(r.values[f.key])}</td>
                 ))}
-                <td className="table-cell text-right font-semibold text-rose-600 dark:text-rose-400">
+                <td className="table-cell text-right font-medium text-amber-600 dark:text-amber-400">
                   {r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                </td>
+                <td className="table-cell text-right font-medium text-rose-600 dark:text-rose-400">
+                  {r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                </td>
+                <td className="table-cell text-right font-medium text-red-600 dark:text-red-400">
+                  {r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                 </td>
                 <td className="table-cell text-center">
                   <span className={`inline-block px-2 py-0.5 rounded font-semibold ${scoreColor(r.score)}`}>
@@ -391,7 +476,7 @@ export default function WarehousesPerformance({ salaryData, reconData, onDemandD
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 1 + 1} className="table-cell text-center text-muted-foreground py-8">
+                <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1} className="table-cell text-center text-muted-foreground py-8">
                   No warehouse data for the selected period
                 </td>
               </tr>

@@ -132,7 +132,7 @@ export async function fetchFleetOperationData(): Promise<FleetOpRow[]> {
   }));
 }
 
-const PENDING_SHEET_ID = '1qUyusVJXcXJHE3WJIQybh7k2tK96YHt-dKrysmY03sA';
+const DEFICITS_SHEET_ID = '1qUyusVJXcXJHE3WJIQybh7k2tK96YHt-dKrysmY03sA';
 
 export interface PendingRow {
   CREATED_AT: string;
@@ -142,7 +142,7 @@ export interface PendingRow {
 }
 
 export async function fetchPendingData(): Promise<PendingRow[]> {
-  const rows = await fetchSheet('Pending', PENDING_SHEET_ID);
+  const rows = await fetchSheet('Pending', DEFICITS_SHEET_ID);
   if (rows.length < 2) return [];
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
@@ -155,6 +155,54 @@ export async function fetchPendingData(): Promise<PendingRow[]> {
     PENDING_VALUE: num(r[7]),
     WAREHOUSE: normalizeWarehouse((r[8] || '').trim()),
     LIABILITY_ON: (r[15] || '').trim(),
+  }));
+}
+
+export interface DamageRow {
+  CREATED_AT: string;
+  DAMAGE_VALUE: number;
+  WAREHOUSE: string;
+  LIABILITY_ON: string;
+}
+
+export async function fetchDamageData(): Promise<DamageRow[]> {
+  const rows = await fetchSheet('Damage', DEFICITS_SHEET_ID);
+  if (rows.length < 2) return [];
+  const num = (s: any) => {
+    if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
+    const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
+  };
+  return rows.slice(1).filter(r => r.length > 16 && r[16]).map(r => ({
+    CREATED_AT: r[1] || '',
+    DAMAGE_VALUE: num(r[10]),
+    WAREHOUSE: normalizeWarehouse((r[16] || '').trim()),
+    LIABILITY_ON: (r[24] || '').trim(),
+  }));
+}
+
+export interface ExtraRow {
+  EXTRA_CREATION_DATE: string;
+  EXTRA_VALUE: number;
+  WAREHOUSE: string;
+  PRODUCT_LIABILITY_TYPE: string;
+}
+
+export async function fetchExtraData(): Promise<ExtraRow[]> {
+  const rows = await fetchSheet('Extra', DEFICITS_SHEET_ID);
+  if (rows.length < 2) return [];
+  const num = (s: any) => {
+    if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
+    const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
+  };
+  return rows.slice(1).filter(r => r.length > 2 && r[2]).map(r => ({
+    EXTRA_CREATION_DATE: r[1] || '',
+    WAREHOUSE: normalizeWarehouse((r[2] || '').trim()),
+    PRODUCT_LIABILITY_TYPE: (r[14] || '').trim(),
+    EXTRA_VALUE: num(r[32]),
   }));
 }
 

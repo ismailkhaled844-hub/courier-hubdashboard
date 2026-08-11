@@ -206,6 +206,40 @@ export async function fetchExtraData(): Promise<ExtraRow[]> {
   }));
 }
 
+const TICKETS_SHEET_ID = '1MQYW6R9LSPXZ7RyCHYAxUJMtQIZ-3Kmk2xOorVSci6A';
+
+export interface TicketRow {
+  TICKET_ID: string;
+  STATUS: string;
+  CREATED_AT: string;
+  DAT: string;
+  CONTACT_REASON: string;
+  SUB_CONTACT_REASON: string;
+  TICKET_COMMENT: string;
+  PRODUCT_NAME: string;
+  SALES_ORDER_ID: string;
+  WAREHOUSE: string;
+  DRIVER_NAME: string;
+}
+
+export async function fetchTicketsData(): Promise<TicketRow[]> {
+  const rows = await fetchSheet('Ecommerce Max Support Tickets', TICKETS_SHEET_ID);
+  if (rows.length < 2) return [];
+  return rows.slice(1).filter(r => r.length > 20 && r[20]).map(r => ({
+    TICKET_ID: r[0] || '',
+    STATUS: r[1] || '',
+    CREATED_AT: r[2] || '',
+    DAT: r[3] || '',
+    CONTACT_REASON: r[4] || '',
+    SUB_CONTACT_REASON: r[5] || '',
+    TICKET_COMMENT: r[6] || '',
+    PRODUCT_NAME: r[7] || '',
+    SALES_ORDER_ID: r[8] || '',
+    WAREHOUSE: normalizeWarehouse((r[20] || '').trim()),
+    DRIVER_NAME: r[21] || '',
+  }));
+}
+
 export async function fetchLastUpdateDates(): Promise<{ salaryLastUpdate: string; reconLastUpdate: string }> {
   const [salaryRows, reconRows] = await Promise.all([
     fetchSheet('Logistics Salary'),

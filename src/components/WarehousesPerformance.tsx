@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow, DamageRow, ExtraRow } from '@/lib/google-sheets';
+import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow, DamageRow, ExtraRow, TicketRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Download, Settings2, RotateCcw, Warehouse, HelpCircle } from 'lucide-react';
+import { Download, Settings2, RotateCcw, Warehouse, HelpCircle, BookOpen, Calculator, CheckCircle2, TrendingUp, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Props {
@@ -18,6 +18,7 @@ interface Props {
   pendingData?: PendingRow[];
   damageData?: DamageRow[];
   extraData?: ExtraRow[];
+  ticketsData?: TicketRow[];
 }
 
 type FactorKey = 'nmvPct' | 'avgValue' | 'avgOrders' | 'avgWeight' | 'ordersPerHour' | 'weightPerHour';
@@ -97,6 +98,7 @@ export default function WarehousesPerformance({
   pendingData = [],
   damageData = [],
   extraData = [],
+  ticketsData = [],
 }: Props) {
   const def = defaultRange();
   const [fromDate, setFromDate] = useState<Date | undefined>(def.from);
@@ -128,6 +130,7 @@ export default function WarehousesPerformance({
   const [draftWeights, setDraftWeights] = useState<PerformanceWeights>(weights);
   const [draftTargets, setDraftTargets] = useState<PerformanceTargets>(targets);
   const [open, setOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   useEffect(() => { localStorage.setItem(WEIGHTS_KEY, JSON.stringify(weights)); }, [weights]);
   useEffect(() => { localStorage.setItem(TARGETS_KEY, JSON.stringify(targets)); }, [targets]);
@@ -161,6 +164,7 @@ export default function WarehousesPerformance({
       pendingDeficit: number;
       damageDeficit: number;
       extraDeficit: number;
+      tickets: number;
     }>();
     const get = (wh: string) => {
       if (!agg.has(wh)) {
@@ -177,6 +181,7 @@ export default function WarehousesPerformance({
           pendingDeficit: 0,
           damageDeficit: 0,
           extraDeficit: 0,
+          tickets: 0,
         });
       }
       return agg.get(wh)!;
@@ -270,8 +275,17 @@ export default function WarehousesPerformance({
       });
     }
 
+    // 4. Tickets per warehouse (Ecommerce Max Support Tickets based on DAT)
+    if (ticketsData && ticketsData.length > 0) {
+      ticketsData.forEach(r => {
+        const wh = normalizeWarehouse(r.WAREHOUSE);
+        if (!wh || isExcluded(wh) || !inRange(r.DAT || r.CREATED_AT)) return;
+        get(wh).tickets += 1;
+      });
+    }
+
     const base = [...agg.entries()]
-      .filter(([wh, a]) => !isExcluded(wh) && (a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0 || a.damageDeficit > 0 || a.extraDeficit > 0))
+      .filter(([wh, a]) => !isExcluded(wh) && (a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0 || a.damageDeficit > 0 || a.extraDeficit > 0 || a.tickets > 0))
       .map(([wh, a]) => {
         const hasRunSheets = a.runSheets > 0;
         const totalDeficit = (a.pendingDeficit || 0) + (a.damageDeficit || 0) + (a.extraDeficit || 0);
@@ -296,6 +310,7 @@ export default function WarehousesPerformance({
           damageDeficit: a.damageDeficit,
           extraDeficit: a.extraDeficit,
           totalDeficit,
+          tickets: a.tickets,
           values,
         };
       });
@@ -318,6 +333,7 @@ export default function WarehousesPerformance({
     const maxDamage = Math.max(0, ...base.map(b => b.damageDeficit));
     const maxExtra = Math.max(0, ...base.map(b => b.extraDeficit));
     const dynamicMaxTotalDeficit = Math.max(0, ...base.map(b => b.totalDeficit));
+    const maxTickets = Math.max(0, ...base.map(b => b.tickets));
 
     // Active Benchmarks (Manual target if set > 0, otherwise dynamic max)
     const benchmark: Record<FactorKey, { value: number; isManual: boolean; label: string }> = {
@@ -382,6 +398,9 @@ export default function WarehousesPerformance({
         // Deficit total pool score: lower deficit is better (100 for 0 deficit, scales down to 0 for highest deficit)
         const deficitScore = benchmarkMaxDeficit > 0 ? Math.max(0, (1 - (b.totalDeficit / benchmarkMaxDeficit)) * 100) : 100;
 
+        // Tickets relative score: lower is better (0 tickets = 100%)
+        const ticketsScore = maxTickets > 0 ? Math.max(0, (1 - (b.tickets / maxTickets)) * 100) : 100;
+
         // Points earned from each category
         const nmvPoints = (nmvNorm * ((weights.nmvPct || 0) / totalWeight));
         const prodPoints = (prodNormAvg * ((weights.productivity || 0) / totalWeight));
@@ -398,6 +417,7 @@ export default function WarehousesPerformance({
           pendingScore: safeDiv(pendingScore, 1),
           damageScore: safeDiv(damageScore, 1),
           extraScore: safeDiv(extraScore, 1),
+          ticketsScore: safeDiv(ticketsScore, 1),
           nmvPoints: safeDiv(nmvPoints, 1),
           prodPoints: safeDiv(prodPoints, 1),
           defPoints: safeDiv(defPoints, 1),
@@ -406,7 +426,7 @@ export default function WarehousesPerformance({
         };
       })
       .sort((a, b) => b.score - a.score);
-  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, fromDate, toDate, weights, targets]);
+  }, [salaryData, reconData, onDemandData, fleetOpData, pendingData, damageData, extraData, ticketsData, fromDate, toDate, weights, targets]);
 
   const draftTotal = (draftWeights.nmvPct || 0) + (draftWeights.productivity || 0) + (draftWeights.deficits || 0);
 
@@ -453,6 +473,8 @@ export default function WarehousesPerformance({
         'Extra Score': +r.extraScore.toFixed(1),
         'Total Deficit': +r.totalDeficit.toFixed(2),
         'Deficit Pool Score': +r.deficitScore.toFixed(1),
+        'Support Tickets': r.tickets,
+        'Tickets Score': +r.ticketsScore.toFixed(1),
         'Total Performance %': +r.score.toFixed(2),
       })),
       'Warehouses_Performance'
@@ -468,9 +490,21 @@ export default function WarehousesPerformance({
         <div className="flex flex-wrap items-center gap-3 justify-between">
           <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
           <div className="flex items-center gap-2">
+            {/* Calculation Guide Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setGuideOpen(true)}
+              className="text-xs h-9 gap-1 text-primary border-primary/40 hover:bg-primary/10 font-medium"
+            >
+              <HelpCircle className="h-4 w-4 text-primary" />
+              <span>Logic & Guide</span>
+            </Button>
+
+            {/* Weights & Benchmarks Dialog */}
             <Dialog open={open} onOpenChange={o => { setOpen(o); if (o) { setDraftWeights(weights); setDraftTargets(targets); } }}>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" className="text-xs h-9">
                   <Settings2 className="h-4 w-4 mr-1" /> Weights & Benchmarks
                 </Button>
               </DialogTrigger>
@@ -616,11 +650,146 @@ export default function WarehousesPerformance({
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length}>
+
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={!rows.length} className="text-xs h-9">
               <Download className="h-4 w-4 mr-1" /> Export Excel
             </Button>
           </div>
         </div>
+
+        {/* Calculation Guide Dialog */}
+        <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-primary">
+                <BookOpen className="h-5 w-5" />
+                دليل الحسابات ولوجيك التقييم بالأمثلة (Calculation Guide & Logic)
+              </DialogTitle>
+              <DialogDescription>
+                شرح شامل ومفصل لكيفية حساب كل عمود، تحديد الـ Benchmark، وتوزيع الأوزان حتى استخراج السكور النهائي.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 text-xs leading-relaxed text-foreground pt-2">
+              {/* Card 1: Overview */}
+              <div className="p-3 rounded-lg border bg-muted/40 space-y-2">
+                <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
+                  <TrendingUp className="h-4 w-4" /> 1. منهجية التقييم المعياري (Benchmark Normalization)
+                </h4>
+                <p>
+                  لكل مؤشر، يتم مقارنة أداء كل مخزن إما بمستهدف يدوي <strong>(Target)</strong> حدده المستخدم، أو بأداء <strong>أعلى مخزن (Top Performer = 100%)</strong> في نفس الفترة المحددة بالفلتر.
+                </p>
+                <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-[11px]">
+                  <div className="p-2 rounded bg-card border text-center">
+                    <div className="text-muted-foreground font-sans text-[10px]">وزن NMV%</div>
+                    <div className="font-bold text-primary">{weights.nmvPct}%</div>
+                  </div>
+                  <div className="p-2 rounded bg-card border text-center">
+                    <div className="text-muted-foreground font-sans text-[10px]">وزن الإنتاجية (5 مؤشرات)</div>
+                    <div className="font-bold text-primary">{weights.productivity}%</div>
+                    <div className="text-[9px] text-muted-foreground font-sans">({(weights.productivity / 5).toFixed(1)}% لكل مؤشر)</div>
+                  </div>
+                  <div className="p-2 rounded bg-card border text-center">
+                    <div className="text-muted-foreground font-sans text-[10px]">وزن العجوزات (Deficits)</div>
+                    <div className="font-bold text-primary">{weights.deficits}%</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: NMV% */}
+              <div className="p-3 rounded-lg border bg-card space-y-1.5">
+                <h4 className="font-bold text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4" /> 2. نسبة التسليم المالي (NMV%)
+                </h4>
+                <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
+                  NMV% = (∑ NMV ÷ ∑ OFD_VALUE) × 100
+                </div>
+                <p>
+                  <strong>طريقة حساب السكور:</strong> (NMV% المخزن ÷ Benchmark) × 100.
+                </p>
+                <p className="text-muted-foreground">
+                  <strong>مثال:</strong> مخزن حقق NMV% بقيمة 97.87%، وكان الـ Benchmark هو 99.50%، فإن سكور المؤشر = (97.87 ÷ 99.50) × 100 = <strong>98.36%</strong>. يساهم في الإجمالي بـ: 98.36% × {weights.nmvPct}% = <strong>+{(98.36 * (weights.nmvPct / 100)).toFixed(2)} نقطة</strong>.
+                </p>
+              </div>
+
+              {/* Card 3: Productivity 5 Factors */}
+              <div className="p-3 rounded-lg border bg-card space-y-2">
+                <h4 className="font-bold text-sm text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                  <Calculator className="h-4 w-4" /> 3. مؤشرات الإنتاجية الـ 5 (Productivity) — وزن إجمالي {weights.productivity}%
+                </h4>
+                <div className="space-y-1.5 pl-2 border-l-2 border-primary/30">
+                  <div>
+                    <strong>• Avg Value (متوسط قيمة الرحلة):</strong> ∑ OFD_VALUE ÷ عدد الـ Run Sheets.
+                  </div>
+                  <div>
+                    <strong>• Avg Orders (متوسط طلبات الرحلة):</strong> ∑ OFD_ORDERS ÷ عدد الـ Run Sheets.
+                  </div>
+                  <div>
+                    <strong>• Avg Weight (متوسط وزن الرحلة):</strong> ∑ WEIGHT ÷ عدد الـ Run Sheets.
+                  </div>
+                  <div>
+                    <strong>• Orders/Hour (معدل الطلبات بالساعة):</strong> ∑ OFD_ORDERS ÷ ∑ TRIP_TIME_HRS.
+                  </div>
+                  <div>
+                    <strong>• Weight/Hour (معدل الوزن بالساعة):</strong> ∑ WEIGHT ÷ ∑ TRIP_TIME_HRS.
+                  </div>
+                </div>
+                <p className="text-muted-foreground bg-muted/50 p-2 rounded">
+                  <strong>مثال عملي (Avg Value):</strong> مخزن الشرقية حقق متوسط 77,768 جنيه/رحلة، وأعلى مخزن (المنصورة) حقق 97,510 جنيه/رحلة. السكور = (77,768 ÷ 97,510) × 100 = <strong>79.75%</strong>. النقاط المكتسبة = 79.75% × {(weights.productivity / 5).toFixed(1)}% = <strong>+{(79.75 * ((weights.productivity / 5) / 100)).toFixed(2)} نقطة</strong>.
+                </p>
+              </div>
+
+              {/* Card 4: Deficits */}
+              <div className="p-3 rounded-lg border bg-card space-y-2">
+                <h4 className="font-bold text-sm text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                  <ShieldCheck className="h-4 w-4" /> 4. مؤشرات العجوزات (Deficits) — وزن إجمالي {weights.deficits}%
+                </h4>
+                <p>
+                  العجوزات مؤشر خسارة (Negative Metric). المخزن صاحب العجز الأقل هو الأفضل.
+                </p>
+                <div className="space-y-1 font-mono text-[11px] bg-muted p-2 rounded">
+                  <div>• Pending Deficit = مجموع PENDING_VALUE (حيث المسؤولية Liability = Courier)</div>
+                  <div>• Damage Deficit = مجموع DAMAGE_VALUE (حيث المسؤولية Liability = Courier)</div>
+                  <div>• Extra Deficit = مجموع EXTRA_VALUE (حيث المسؤولية Liability = Courier)</div>
+                  <div>• Total Deficit = Pending + Damage + Extra</div>
+                </div>
+                <div className="font-mono bg-muted p-1.5 rounded text-[11px]">
+                  Deficit Score = (1 - (Total Deficit ÷ Max Deficit Benchmark)) × 100
+                </div>
+                <p className="text-muted-foreground">
+                  <strong>مثال:</strong> إذا كان عجز المخزن 500 جنيه، وأعلى عجز سجله أسوأ مخزن هو 35,000 جنيه: السكور = (1 - 500 ÷ 35,000) × 100 = <strong>98.57%</strong>. وإذا كان العجز 0 جنيه يأخذ <strong>100% كاملة</strong>.
+                </p>
+              </div>
+
+              {/* Card 5: Tickets */}
+              <div className="p-3 rounded-lg border bg-card space-y-1.5">
+                <h4 className="font-bold text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4" /> 5. تذاكر الدعم والشكاوى (Support Tickets)
+                </h4>
+                <p>
+                  يتم سحب التذاكر من شيت <strong>Ecommerce Max Support Tickets</strong> بناءً على عمود <strong>WAREHOUSE</strong> وتاريخ <strong>DAT</strong> في الفترة المحددة، وعمل <strong>COUNT</strong> لإجمالي عدد التذاكر المسجلة للمخزن.
+                </p>
+              </div>
+
+              {/* Card 6: Total Score Formula */}
+              <div className="p-3 rounded-lg border bg-primary/10 border-primary/30 space-y-1.5">
+                <h4 className="font-bold text-sm text-primary flex items-center gap-1.5">
+                  🏆 6. معادلة التقييم النهائي الإجمالي (Total Performance %)
+                </h4>
+                <div className="font-mono text-[11px] p-2 bg-background rounded border">
+                  Total Performance = (NMV_Score × {weights.nmvPct}%) + (Productivity_Avg_Score × {weights.productivity}%) + (Deficits_Score × {weights.deficits}%)
+                </div>
+                <p className="text-muted-foreground text-[11px]">
+                  حيث أن Productivity_Avg_Score هو متوسط سكورات مؤشرات الإنتاجية الـ 5.
+                </p>
+              </div>
+            </div>
+
+            <DialogFooter className="mt-3">
+              <Button size="sm" onClick={() => setGuideOpen(false)}>فهمت (Close Guide)</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Warehouse className="h-4 w-4" />
@@ -647,6 +816,10 @@ export default function WarehousesPerformance({
                 <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
                   Deficits
                   <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
+                </th>
+                <th rowSpan={2} className="table-header-cell text-center min-w-[110px] border-r-2 border-primary-foreground/40">
+                  Tickets
+                  <span className="block text-[10px] font-normal opacity-70">Count</span>
                 </th>
                 <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
               </tr>
@@ -775,7 +948,7 @@ export default function WarehousesPerformance({
                       </TooltipContent>
                     </Tooltip>
 
-                    {/* Extra Deficit with Tooltip & Deficit Pool Score */}
+                    {/* Extra Deficit with Tooltip */}
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <td className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
@@ -792,6 +965,25 @@ export default function WarehousesPerformance({
                         <div><strong>Deficit Benchmark Max:</strong> {r.benchmarkMaxDeficit.toLocaleString()} EGP</div>
                         <div><strong>Total Deficit Pool Score:</strong> (1 - {r.totalDeficit.toLocaleString()} ÷ {r.benchmarkMaxDeficit.toLocaleString()}) × 100 = <strong>{r.deficitScore.toFixed(1)}%</strong></div>
                         <div className="text-emerald-500 font-semibold pt-1 border-t">Impact on Total: {r.deficitScore.toFixed(1)}% × {weights.deficits}% Weight = +{r.defPoints.toFixed(2)} pts</div>
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Support Tickets Column with Tooltip */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <td className="table-cell text-center font-medium text-amber-600 dark:text-amber-400 border-r-2 border-border/80 whitespace-nowrap cursor-help hover:bg-muted/80 transition-colors">
+                          <span>{r.tickets.toLocaleString()}</span>
+                          <span className="text-[11px] font-semibold text-primary/80 ml-1.5">
+                            ({r.ticketsScore.toFixed(1)}%)
+                          </span>
+                        </td>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs text-xs space-y-1 p-2.5">
+                        <div className="font-bold text-amber-500 border-b pb-1">Support Tickets • {r.warehouse}</div>
+                        <div><strong>Tickets Count:</strong> {r.tickets.toLocaleString()} tickets in selected period</div>
+                        <div><strong>Source Sheet:</strong> Ecommerce Max Support Tickets</div>
+                        <div><strong>Filter:</strong> WAREHOUSE & DAT in date range</div>
+                        <div><strong>Relative Score:</strong> Lower is better (0 Tickets = 100%). Score: <strong>{r.ticketsScore.toFixed(1)}%</strong></div>
                       </TooltipContent>
                     </Tooltip>
 
@@ -820,7 +1012,7 @@ export default function WarehousesPerformance({
               })}
               {!rows.length && (
                 <tr>
-                  <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1} className="table-cell text-center text-muted-foreground py-8">
+                  <td colSpan={2 + 1 + PRODUCTIVITY_FACTORS.length + 3 + 1 + 1} className="table-cell text-center text-muted-foreground py-8">
                     No warehouse data for the selected period
                   </td>
                 </tr>

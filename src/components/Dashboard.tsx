@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, fetchDamageData, fetchExtraData, SalaryRow } from '@/lib/google-sheets';
+import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, fetchDamageData, fetchExtraData, fetchTicketsData, SalaryRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import CourierDailyPerformance from './CourierDailyPerformance';
 import CourierFinancialDetails from './CourierFinancialDetails';
@@ -242,6 +242,13 @@ export default function Dashboard() {
   const { data: extraData } = useQuery({
     queryKey: ['extra-data'],
     queryFn: fetchExtraData,
+    staleTime: 0,
+    refetchInterval: 30000,
+  });
+
+  const { data: ticketsData } = useQuery({
+    queryKey: ['tickets-data'],
+    queryFn: fetchTicketsData,
     staleTime: 0,
     refetchInterval: 30000,
   });
@@ -555,6 +562,7 @@ export default function Dashboard() {
             pendingData={pendingData || []}
             damageData={damageData || []}
             extraData={extraData || []}
+            ticketsData={ticketsData || []}
           />
         ) : (
           <>

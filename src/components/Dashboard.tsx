@@ -336,10 +336,10 @@ export default function Dashboard() {
           )}
           <div className="mr-auto" />
 
-          {activeTab !== 'home' && activeTab !== 'helicopter' && activeTab !== 'ofd-live' && (
+          {activeTab !== 'home' && activeTab !== 'helicopter' && activeTab !== 'ofd-live' && activeTab !== 'warehouses' && (
             <DateRangeFilter fromDate={fromDate} toDate={toDate} onFromChange={setFromDate} onToChange={setToDate} />
           )}
-          {dataAlerts.length > 0 && activeTab !== 'home' && activeTab !== 'helicopter' && activeTab !== 'ofd-live' && (
+          {dataAlerts.length > 0 && activeTab !== 'home' && activeTab !== 'helicopter' && activeTab !== 'ofd-live' && activeTab !== 'warehouses' && (
             <Sheet>
               <SheetTrigger asChild>
                 <Button variant="outline" size="icon" className="h-9 w-9 relative border-destructive/50">
@@ -456,7 +456,7 @@ export default function Dashboard() {
 
 
 
-      <main className="w-full px-4 py-3">
+      <main className="w-full px-4 pt-6 pb-8">
         {activeTab === 'home' ? (
           <section className="max-w-6xl mx-auto py-10">
             <div className="text-center mb-10">

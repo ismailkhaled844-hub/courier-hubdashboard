@@ -146,9 +146,14 @@ export default function WarehousesPerformance({
       return agg.get(wh)!;
     };
 
+    const isExcluded = (name: string) => {
+      const n = (name || '').trim().toLowerCase();
+      return n === 'frozen_gc' || n === 'frozen gc' || n.includes('frozen_gc');
+    };
+
     salaryData.forEach(r => {
       const wh = normalizeWarehouse(r.TEAM_NAME);
-      if (!wh || !inRange(r.DATE)) return;
+      if (!wh || isExcluded(wh) || !inRange(r.DATE)) return;
       const a = get(wh);
       a.orders += r.DELIVERED_ORDERS || 0;
       a.weight += r.DELIVERED_WEIGHT || 0;
@@ -160,7 +165,7 @@ export default function WarehousesPerformance({
     if (isFleetAvailable) {
       fleetOpData.forEach(r => {
         const wh = normalizeWarehouse(r.WAREHOUSE);
-        if (!wh || !inRange(r.DELIVERY_DATE)) return;
+        if (!wh || isExcluded(wh) || !inRange(r.DELIVERY_DATE)) return;
         const a = get(wh);
         a.runSheets += 1;
         a.nmv += r.NMV || 0;
@@ -176,14 +181,14 @@ export default function WarehousesPerformance({
       reconData.forEach(r => {
         const wh = normalizeWarehouse((r.WAREHOUSE || r._col4 || '').trim());
         const date = r.DELIVERY_DATE || r._col5 || '';
-        if (!wh || !inRange(date)) return;
+        if (!wh || isExcluded(wh) || !inRange(date)) return;
         const amount = parseFloat((r.TOTAL_DELIVERY_AMOUNT || r._col6 || '').replace(/,/g, '')) || 0;
         get(wh).nmv += amount;
       });
 
       onDemandData.forEach(r => {
         const wh = normalizeWarehouse(r.WH);
-        if (!wh) return;
+        if (!wh || isExcluded(wh)) return;
         if (fromDate || toDate) {
           const d = new Date(r.Date);
           if (isNaN(d.getTime())) return;
@@ -205,7 +210,7 @@ export default function WarehousesPerformance({
       pendingData.forEach(r => {
         if ((r.LIABILITY_ON || '').toLowerCase() !== 'courier') return;
         const wh = normalizeWarehouse(r.WAREHOUSE);
-        if (!wh || !inRange(r.CREATED_AT)) return;
+        if (!wh || isExcluded(wh) || !inRange(r.CREATED_AT)) return;
         get(wh).pendingDeficit += r.PENDING_VALUE || 0;
       });
     }
@@ -215,7 +220,7 @@ export default function WarehousesPerformance({
       damageData.forEach(r => {
         if ((r.LIABILITY_ON || '').toLowerCase() !== 'courier') return;
         const wh = normalizeWarehouse(r.WAREHOUSE);
-        if (!wh || !inRange(r.CREATED_AT)) return;
+        if (!wh || isExcluded(wh) || !inRange(r.CREATED_AT)) return;
         get(wh).damageDeficit += r.DAMAGE_VALUE || 0;
       });
     }
@@ -225,13 +230,13 @@ export default function WarehousesPerformance({
       extraData.forEach(r => {
         if ((r.PRODUCT_LIABILITY_TYPE || '').toLowerCase() !== 'courier') return;
         const wh = normalizeWarehouse(r.WAREHOUSE);
-        if (!wh || !inRange(r.EXTRA_CREATION_DATE)) return;
+        if (!wh || isExcluded(wh) || !inRange(r.EXTRA_CREATION_DATE)) return;
         get(wh).extraDeficit += r.EXTRA_VALUE || 0;
       });
     }
 
     const base = [...agg.entries()]
-      .filter(([, a]) => a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0 || a.damageDeficit > 0 || a.extraDeficit > 0)
+      .filter(([wh, a]) => !isExcluded(wh) && (a.days > 0 || a.nmv > 0 || a.ofd > 0 || a.runSheets > 0 || a.pendingDeficit > 0 || a.damageDeficit > 0 || a.extraDeficit > 0))
       .map(([wh, a]) => {
         const hasRunSheets = a.runSheets > 0;
         const totalDeficit = (a.pendingDeficit || 0) + (a.damageDeficit || 0) + (a.extraDeficit || 0);
@@ -428,25 +433,30 @@ export default function WarehousesPerformance({
                 {NMV_FACTOR.label}
                 <span className="block text-[10px] font-normal opacity-70">{weights.nmvPct}%</span>
               </th>
-              <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20">
+              <th colSpan={PRODUCTIVITY_FACTORS.length} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
                 Productivity
                 <span className="block text-[10px] font-normal opacity-70">{weights.productivity}%</span>
               </th>
-              <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20">
+              <th colSpan={3} className="table-header-cell text-center border-b border-primary-foreground/20 border-r-2 border-primary-foreground/40">
                 Deficits
                 <span className="block text-[10px] font-normal opacity-70">{weights.deficits}%</span>
               </th>
               <th rowSpan={2} className="table-header-cell text-center min-w-[150px]">Total Performance</th>
             </tr>
             <tr>
-              {PRODUCTIVITY_FACTORS.map(f => (
-                <th key={f.key} className="table-header-cell text-center min-w-[120px]">
+              {PRODUCTIVITY_FACTORS.map((f, idx) => (
+                <th
+                  key={f.key}
+                  className={`table-header-cell text-center min-w-[120px] ${
+                    idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-primary-foreground/40' : ''
+                  }`}
+                >
                   {f.label}
                 </th>
               ))}
               <th className="table-header-cell text-center min-w-[130px]">Pending Deficit</th>
               <th className="table-header-cell text-center min-w-[130px]">Damage Deficit</th>
-              <th className="table-header-cell text-center min-w-[130px]">Extra Deficit</th>
+              <th className="table-header-cell text-center min-w-[130px] border-r-2 border-primary-foreground/40">Extra Deficit</th>
             </tr>
           </thead>
           <tbody>
@@ -455,8 +465,15 @@ export default function WarehousesPerformance({
                 <td className="table-cell sticky left-0 bg-card z-10 text-center font-medium">{i + 1}</td>
                 <td className="table-cell sticky left-[60px] bg-card z-10 font-medium">{r.warehouse}</td>
                 <td className="table-cell text-center">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</td>
-                {PRODUCTIVITY_FACTORS.map(f => (
-                  <td key={f.key} className="table-cell text-center">{f.fmt(r.values[f.key])}</td>
+                {PRODUCTIVITY_FACTORS.map((f, idx) => (
+                  <td
+                    key={f.key}
+                    className={`table-cell text-center ${
+                      idx === PRODUCTIVITY_FACTORS.length - 1 ? 'border-r-2 border-border/80' : ''
+                    }`}
+                  >
+                    {f.fmt(r.values[f.key])}
+                  </td>
                 ))}
                 <td className="table-cell text-right font-medium text-amber-600 dark:text-amber-400">
                   {r.pendingDeficit > 0 ? r.pendingDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
@@ -464,7 +481,7 @@ export default function WarehousesPerformance({
                 <td className="table-cell text-right font-medium text-rose-600 dark:text-rose-400">
                   {r.damageDeficit > 0 ? r.damageDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                 </td>
-                <td className="table-cell text-right font-medium text-red-600 dark:text-red-400">
+                <td className="table-cell text-right font-medium text-red-600 dark:text-red-400 border-r-2 border-border/80">
                   {r.extraDeficit > 0 ? r.extraDeficit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                 </td>
                 <td className="table-cell text-center">

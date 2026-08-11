@@ -392,15 +392,16 @@ export default function WarehousesPerformance({
     const benchmarkMaxDeficit = targets.maxDeficit > 0 ? targets.maxDeficit : dynamicMaxTotalDeficit;
     const benchmarkMaxTickets = targets.maxTickets > 0 ? targets.maxTickets : maxTickets;
     const totalWeight = (weights.nmvPct || 0) + (weights.productivity || 0) + (weights.deficits || 0) + (weights.tickets || 0) || 1;
-
     return base
       .map(b => {
-        // NMV% normalized score (0-100)
-        const nmvNorm = benchmark.nmvPct.value > 0 ? Math.min(100, (b.values.nmvPct / benchmark.nmvPct.value) * 100) : 0;
+        // NMV% score: If manual target set, score relative to target; otherwise score is directly the warehouse NMV%
+        const nmvNorm = benchmark.nmvPct.isManual
+          ? (benchmark.nmvPct.value > 0 ? Math.min(100, (b.values.nmvPct / benchmark.nmvPct.value) * 100) : 0)
+          : Math.min(100, b.values.nmvPct);
 
         // Productivity normalized scores
         const scores: Record<FactorKey, number> = {
-          nmvPct: safeDiv(nmvNorm, 1),
+          nmvPct: nmvNorm,
           avgValue: benchmark.avgValue.value > 0 ? safeDiv(Math.min(100, (b.values.avgValue / benchmark.avgValue.value) * 100), 1) : 0,
           avgOrders: benchmark.avgOrders.value > 0 ? safeDiv(Math.min(100, (b.values.avgOrders / benchmark.avgOrders.value) * 100), 1) : 0,
           avgWeight: benchmark.avgWeight.value > 0 ? safeDiv(Math.min(100, (b.values.avgWeight / benchmark.avgWeight.value) * 100), 1) : 0,
@@ -993,22 +994,24 @@ export default function WarehousesPerformance({
                       warehouse: r.warehouse,
                       actualLabel: 'نسبة NMV% المحققة',
                       actualValue: `${r.values.nmvPct.toFixed(2)}%`,
-                      formula: `NMV: ${r.nmv.toLocaleString()} EGP ÷ OFD: ${r.ofd.toLocaleString()} EGP = ${r.values.nmvPct.toFixed(2)}%`,
-                      benchmarkLabel: r.benchmark.nmvPct.isManual ? 'المستهدف اليدوي' : 'أعلى مخزن تم تحقيقه',
-                      benchmarkValue: r.benchmark.nmvPct.label,
-                      scoreText: `(${r.values.nmvPct.toFixed(2)}% ÷ ${r.benchmark.nmvPct.value.toFixed(2)}%) × 100 = ${r.scores.nmvPct.toFixed(1)}%`,
+                      formula: `NMV: ${r.nmv.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP ÷ OFD: ${r.ofd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EGP = ${r.values.nmvPct.toFixed(2)}%`,
+                      benchmarkLabel: r.benchmark.nmvPct.isManual ? 'المستهدف اليدوي' : 'النسبة المئوية المحققة',
+                      benchmarkValue: r.benchmark.nmvPct.isManual ? `${r.benchmark.nmvPct.value}%` : '100%',
+                      scoreText: r.benchmark.nmvPct.isManual ? `(${r.values.nmvPct.toFixed(2)}% ÷ ${r.benchmark.nmvPct.value}%) × 100 = ${r.scores.nmvPct.toFixed(1)}%` : `${r.values.nmvPct.toFixed(2)}%`,
                       scorePct: r.scores.nmvPct,
-                      weightLabel: 'وزن المؤشر في التقييم',
+                      weightLabel: 'وزن NMV% في التقييم',
                       weightPct: weights.nmvPct,
                       pointsEarned: r.nmvPoints,
-                      explanation: `تمت مقارنة نسبة التسليم المالي للمخزن (${r.values.nmvPct.toFixed(2)}%) بالـ Benchmark (${r.benchmark.nmvPct.value.toFixed(2)}%)، وحصل المخزن على سكور ${r.scores.nmvPct.toFixed(1)}% ليساهم بـ +${r.nmvPoints.toFixed(2)} نقطة في الإجمالي.`,
+                      explanation: `نسبة التسليم المالي = (إجمالي قيمة NMV المُسلّمة ÷ إجمالي قيمة OFD الخارجة للتسليم) × 100%. وتساهم بـ +${r.nmvPoints.toFixed(2)} نقطة في السكور النهائي.`,
                     })}
                     className="table-cell text-center whitespace-nowrap cursor-pointer hover:bg-primary/10 transition-colors"
                   >
-                    <span className="font-medium text-foreground">{NMV_FACTOR.fmt(r.values[NMV_FACTOR.key])}</span>
-                    <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
-                      ({r.scores[NMV_FACTOR.key].toFixed(1)}%)
-                    </span>
+                    <span className="font-semibold text-foreground">{r.values.nmvPct.toFixed(2)}%</span>
+                    {r.benchmark.nmvPct.isManual && (
+                      <span className="text-[11px] font-semibold text-primary/80 ml-1.5 underline decoration-primary/40 underline-offset-2">
+                        ({r.scores.nmvPct.toFixed(1)}%)
+                      </span>
+                    )}
                   </td>
 
                   {/* Productivity Cells with Click Details */}

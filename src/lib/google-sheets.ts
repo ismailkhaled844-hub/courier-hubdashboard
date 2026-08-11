@@ -184,14 +184,6 @@ function findCol(headers: string[], names: string[], fallbackIdx: number): numbe
 export async function fetchFleetOperationData(): Promise<FleetOpRow[]> {
   const rows = await fetchSheet('Fleet operation', FLEET_SHEET_ID);
   if (rows.length < 2) return [];
-  const headers = rows[0];
-  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 5);
-  const idxDate = findCol(headers, ['DELIVERY_DATE', 'DELIVERYDATE', 'DATE'], 6);
-  const idxTripHrs = findCol(headers, ['TRIP_TIME_HRS', 'TRIPTIMEHRS', 'TRIP_TIME', 'TRIP_HOURS', 'HOURS'], 15);
-  const idxOfdVal = findCol(headers, ['OFD_VALUE', 'OFDVALUE', 'TOTAL_OFD_VALUE', 'OFD'], 18);
-  const idxNmv = findCol(headers, ['NMV', 'TOTAL_NMV', 'DELIVERED_VALUE'], 19);
-  const idxOfdOrders = findCol(headers, ['OFD_ORDERS', 'OFDORDERS', 'TOTAL_OFD_ORDERS', 'ORDERS'], 23);
-  const idxWeight = findCol(headers, ['WEIGHT', 'DELIVERED_WEIGHT', 'TOTAL_WEIGHT'], 30);
 
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
@@ -200,14 +192,14 @@ export async function fetchFleetOperationData(): Promise<FleetOpRow[]> {
     return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
   };
 
-  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
-    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
-    DELIVERY_DATE: r[idxDate] || '',
-    TRIP_TIME_HRS: num(r[idxTripHrs]),
-    OFD_VALUE: num(r[idxOfdVal]),
-    NMV: num(r[idxNmv]),
-    OFD_ORDERS: num(r[idxOfdOrders]),
-    WEIGHT: num(r[idxWeight]),
+  return rows.slice(1).filter(r => r.length > 5 && r[5]).map(r => ({
+    WAREHOUSE: normalizeWarehouse((r[5] || '').trim()), // Column 6 (Index 5)
+    DELIVERY_DATE: r[6] || '',                          // Column 7 (Index 6)
+    TRIP_TIME_HRS: num(r[15]),                          // Column 16 (Index 15)
+    OFD_VALUE: num(r[18]),                              // Column 19 (Index 18)
+    NMV: num(r[19]),                                    // Column 20 (Index 19)
+    OFD_ORDERS: num(r[23]),                             // Column 24 (Index 23)
+    WEIGHT: num(r[30]),                                 // Column 31 (Index 30)
   }));
 }
 

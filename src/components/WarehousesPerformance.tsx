@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow, DamageRow, ExtraRow, TicketRow } from '@/lib/google-sheets';
+import { SalaryRow, ReconRow, normalizeWarehouse, OnDemandRow, FleetOpRow, PendingRow, DamageRow, ExtraRow, TicketRow, parseFlexibleDate } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import DateRangeFilter from './DateRangeFilter';
 import { Button } from '@/components/ui/button';
@@ -157,14 +157,14 @@ export default function WarehousesPerformance({
 
   const inRange = (value: string) => {
     if (!value) return false;
-    const d = new Date(value);
-    if (isNaN(d.getTime())) return false;
+    const d = parseFlexibleDate(value);
+    if (!d || isNaN(d.getTime())) return false;
     if (fromDate) {
-      const from = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate(), 0, 0, 0);
+      const from = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate(), 0, 0, 0, 0);
       if (d < from) return false;
     }
     if (toDate) {
-      const to = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate(), 23, 59, 59);
+      const to = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate(), 23, 59, 59, 999);
       if (d > to) return false;
     }
     return true;
@@ -250,14 +250,14 @@ export default function WarehousesPerformance({
         const wh = normalizeWarehouse(r.WH);
         if (!wh || isExcluded(wh)) return;
         if (fromDate || toDate) {
-          const d = new Date(r.Date);
-          if (isNaN(d.getTime())) return;
+          const d = parseFlexibleDate(r.Date);
+          if (!d || isNaN(d.getTime())) return;
           if (fromDate) {
-            const from = new Date(fromDate); from.setHours(0, 0, 0, 0);
+            const from = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate(), 0, 0, 0, 0);
             if (d < from) return;
           }
           if (toDate) {
-            const to = new Date(toDate); to.setHours(23, 59, 59, 999);
+            const to = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate(), 23, 59, 59, 999);
             if (d > to) return;
           }
         }

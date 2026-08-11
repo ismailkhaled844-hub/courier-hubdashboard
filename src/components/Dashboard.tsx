@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, fetchDamageData, fetchExtraData, fetchTicketsData, SalaryRow } from '@/lib/google-sheets';
+import { fetchSalaryData, fetchReconData, fetchLastUpdateDates, fetchOnDemandData, fetchFleetOperationData, fetchPendingData, fetchDamageData, fetchExtraData, fetchTicketsData, parseFlexibleDate, SalaryRow } from '@/lib/google-sheets';
 import { exportToExcel } from '@/lib/export-excel';
 import CourierDailyPerformance from './CourierDailyPerformance';
 import CourierFinancialDetails from './CourierFinancialDetails';
@@ -79,8 +79,7 @@ function getDefaultDateRange() {
 }
 
 function parseDate(d: string): Date | null {
-  const t = new Date(d);
-  return isNaN(t.getTime()) ? null : t;
+  return parseFlexibleDate(d);
 }
 
 interface DataAlert {

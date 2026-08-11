@@ -119,23 +119,95 @@ async function fetchSheet(sheetName: string, sheetId: string = SHEET_ID): Promis
   return csvToArray(text);
 }
 
+export function parseFlexibleDate(str: string): Date | null {
+  if (!str) return null;
+  const s = String(str).trim();
+  if (!s) return null;
+
+  // 1. ISO format: YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // 2. DD-MMM-YY or DD-MMM-YYYY (e.g. 1-Jan-26, 31-Dec-2025)
+  const monthNames: Record<string, number> = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const dMmmMatch = s.match(/^(\d{1,2})[-\/\s]([A-Za-z]{3,9})[-\/\s](\d{2,4})/);
+  if (dMmmMatch) {
+    const day = parseInt(dMmmMatch[1], 10);
+    const mStr = dMmmMatch[2].toLowerCase().slice(0, 3);
+    let year = parseInt(dMmmMatch[3], 10);
+    if (year < 100) year += 2000;
+    if (monthNames[mStr] !== undefined) {
+      const d = new Date(year, monthNames[mStr], day);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  // 3. DD/MM/YYYY or DD-MM-YYYY (e.g. 21/07/2026, 5/8/2026, 1/1/2026)
+  const dmyMatch = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})/);
+  if (dmyMatch) {
+    const p1 = parseInt(dmyMatch[1], 10);
+    const p2 = parseInt(dmyMatch[2], 10);
+    let year = parseInt(dmyMatch[3], 10);
+    if (year < 100) year += 2000;
+
+    if (p1 > 12 && p2 <= 12) {
+      return new Date(year, p2 - 1, p1);
+    } else if (p2 > 12 && p1 <= 12) {
+      return new Date(year, p1 - 1, p2);
+    } else if (p1 <= 31 && p2 <= 12) {
+      // Default to Egyptian logistics standard DD/MM/YYYY
+      return new Date(year, p2 - 1, p1);
+    }
+  }
+
+  // 4. Fallback to standard constructor
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function findCol(headers: string[], names: string[], fallbackIdx: number): number {
+  const upper = headers.map(h => (h || '').trim().toUpperCase().replace(/[\s_-]+/g, ''));
+  for (const n of names) {
+    const search = n.toUpperCase().replace(/[\s_-]+/g, '');
+    const idx = upper.indexOf(search);
+    if (idx >= 0) return idx;
+  }
+  return fallbackIdx;
+}
+
 export async function fetchFleetOperationData(): Promise<FleetOpRow[]> {
   const rows = await fetchSheet('Fleet operation', FLEET_SHEET_ID);
   if (rows.length < 2) return [];
+  const headers = rows[0];
+  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 5);
+  const idxDate = findCol(headers, ['DELIVERY_DATE', 'DELIVERYDATE', 'DATE'], 6);
+  const idxTripHrs = findCol(headers, ['TRIP_TIME_HRS', 'TRIPTIMEHRS', 'TRIP_TIME', 'TRIP_HOURS', 'HOURS'], 15);
+  const idxOfdVal = findCol(headers, ['OFD_VALUE', 'OFDVALUE', 'TOTAL_OFD_VALUE', 'OFD'], 18);
+  const idxNmv = findCol(headers, ['NMV', 'TOTAL_NMV', 'DELIVERED_VALUE'], 19);
+  const idxOfdOrders = findCol(headers, ['OFD_ORDERS', 'OFDORDERS', 'TOTAL_OFD_ORDERS', 'ORDERS'], 23);
+  const idxWeight = findCol(headers, ['WEIGHT', 'DELIVERED_WEIGHT', 'TOTAL_WEIGHT'], 30);
+
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
     const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
   };
-  return rows.slice(1).filter(r => r.length > 5 && r[5]).map(r => ({
-    WAREHOUSE: normalizeWarehouse((r[5] || '').trim()),
-    DELIVERY_DATE: r[6] || '',
-    TRIP_TIME_HRS: num(r[15]),
-    OFD_VALUE: num(r[18]),
-    NMV: num(r[19]),
-    OFD_ORDERS: num(r[23]),
-    WEIGHT: num(r[30]),
+
+  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
+    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
+    DELIVERY_DATE: r[idxDate] || '',
+    TRIP_TIME_HRS: num(r[idxTripHrs]),
+    OFD_VALUE: num(r[idxOfdVal]),
+    NMV: num(r[idxNmv]),
+    OFD_ORDERS: num(r[idxOfdOrders]),
+    WEIGHT: num(r[idxWeight]),
   }));
 }
 
@@ -151,17 +223,24 @@ export interface PendingRow {
 export async function fetchPendingData(): Promise<PendingRow[]> {
   const rows = await fetchSheet('Pending', DEFICITS_SHEET_ID);
   if (rows.length < 2) return [];
+  const headers = rows[0];
+  const idxDate = findCol(headers, ['CREATED_AT', 'CREATEDAT', 'DATE'], 1);
+  const idxVal = findCol(headers, ['PENDING_VALUE', 'PENDINGVALUE', 'VALUE'], 7);
+  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 8);
+  const idxLiability = findCol(headers, ['LIABILITY_ON', 'LIABILITYON', 'LIABILITY'], 15);
+
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
     const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
   };
-  return rows.slice(1).filter(r => r.length > 8 && r[8]).map(r => ({
-    CREATED_AT: r[1] || '',
-    PENDING_VALUE: num(r[7]),
-    WAREHOUSE: normalizeWarehouse((r[8] || '').trim()),
-    LIABILITY_ON: (r[15] || '').trim(),
+
+  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
+    CREATED_AT: r[idxDate] || '',
+    PENDING_VALUE: num(r[idxVal]),
+    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
+    LIABILITY_ON: (r[idxLiability] || '').trim(),
   }));
 }
 
@@ -175,17 +254,24 @@ export interface DamageRow {
 export async function fetchDamageData(): Promise<DamageRow[]> {
   const rows = await fetchSheet('Damage', DEFICITS_SHEET_ID);
   if (rows.length < 2) return [];
+  const headers = rows[0];
+  const idxDate = findCol(headers, ['CREATED_AT', 'CREATEDAT', 'DATE'], 1);
+  const idxVal = findCol(headers, ['DAMAGE_VALUE', 'DAMAGEVALUE', 'VALUE'], 10);
+  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 16);
+  const idxLiability = findCol(headers, ['LIABILITY_ON', 'LIABILITYON', 'LIABILITY'], 24);
+
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
     const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
   };
-  return rows.slice(1).filter(r => r.length > 16 && r[16]).map(r => ({
-    CREATED_AT: r[1] || '',
-    DAMAGE_VALUE: num(r[10]),
-    WAREHOUSE: normalizeWarehouse((r[16] || '').trim()),
-    LIABILITY_ON: (r[24] || '').trim(),
+
+  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
+    CREATED_AT: r[idxDate] || '',
+    DAMAGE_VALUE: num(r[idxVal]),
+    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
+    LIABILITY_ON: (r[idxLiability] || '').trim(),
   }));
 }
 
@@ -199,17 +285,24 @@ export interface ExtraRow {
 export async function fetchExtraData(): Promise<ExtraRow[]> {
   const rows = await fetchSheet('Extra', DEFICITS_SHEET_ID);
   if (rows.length < 2) return [];
+  const headers = rows[0];
+  const idxDate = findCol(headers, ['EXTRA_CREATION_DATE', 'EXTRACREATIONDATE', 'CREATED_AT', 'DATE'], 1);
+  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 2);
+  const idxLiability = findCol(headers, ['PRODUCT_LIABILITY_TYPE', 'PRODUCTLIABILITYTYPE', 'LIABILITY_TYPE', 'LIABILITY'], 14);
+  const idxVal = findCol(headers, ['EXTRA_VALUE', 'EXTRAVALUE', 'VALUE'], 32);
+
   const num = (s: any) => {
     if (typeof s === 'number') return isNaN(s) || !isFinite(s) ? 0 : s;
     const cleaned = String(s || '').replace(/,/g, '').replace(/%/g, '').trim();
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) || !isFinite(parsed) ? 0 : parsed;
   };
-  return rows.slice(1).filter(r => r.length > 2 && r[2]).map(r => ({
-    EXTRA_CREATION_DATE: r[1] || '',
-    WAREHOUSE: normalizeWarehouse((r[2] || '').trim()),
-    PRODUCT_LIABILITY_TYPE: (r[14] || '').trim(),
-    EXTRA_VALUE: num(r[32]),
+
+  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
+    EXTRA_CREATION_DATE: r[idxDate] || '',
+    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
+    PRODUCT_LIABILITY_TYPE: (r[idxLiability] || '').trim(),
+    EXTRA_VALUE: num(r[idxVal]),
   }));
 }
 
@@ -232,18 +325,31 @@ export interface TicketRow {
 export async function fetchTicketsData(): Promise<TicketRow[]> {
   const rows = await fetchSheet('Ecommerce Max Support Tickets', TICKETS_SHEET_ID);
   if (rows.length < 2) return [];
-  return rows.slice(1).filter(r => r.length > 20 && r[20]).map(r => ({
-    TICKET_ID: r[0] || '',
-    STATUS: r[1] || '',
-    CREATED_AT: r[2] || '',
-    DAT: r[3] || '',
-    CONTACT_REASON: r[4] || '',
-    SUB_CONTACT_REASON: r[5] || '',
-    TICKET_COMMENT: r[6] || '',
-    PRODUCT_NAME: r[7] || '',
-    SALES_ORDER_ID: r[8] || '',
-    WAREHOUSE: normalizeWarehouse((r[20] || '').trim()),
-    DRIVER_NAME: r[21] || '',
+  const headers = rows[0];
+  const idxTicketId = findCol(headers, ['TICKET_ID', 'TICKETID', 'ID'], 0);
+  const idxStatus = findCol(headers, ['STATUS'], 1);
+  const idxCreatedAt = findCol(headers, ['CREATED_AT', 'CREATEDAT'], 2);
+  const idxDat = findCol(headers, ['DAT', 'DATE'], 3);
+  const idxContactReason = findCol(headers, ['CONTACT_REASON', 'CONTACTREASON'], 4);
+  const idxSubContactReason = findCol(headers, ['SUB_CONTACT_REASON', 'SUBCONTACTREASON'], 5);
+  const idxComment = findCol(headers, ['TICKET_COMMENT', 'TICKETCOMMENT', 'COMMENT'], 6);
+  const idxProductName = findCol(headers, ['PRODUCT_NAME', 'PRODUCTNAME'], 7);
+  const idxSalesOrderId = findCol(headers, ['SALES_ORDER_ID', 'SALESORDERID'], 8);
+  const idxWh = findCol(headers, ['WAREHOUSE', 'WH', 'HUB'], 20);
+  const idxDriverName = findCol(headers, ['DRIVER_NAME', 'DRIVERNAME', 'DRIVER'], 21);
+
+  return rows.slice(1).filter(r => r.length > idxWh && r[idxWh]).map(r => ({
+    TICKET_ID: r[idxTicketId] || '',
+    STATUS: r[idxStatus] || '',
+    CREATED_AT: r[idxCreatedAt] || '',
+    DAT: r[idxDat] || '',
+    CONTACT_REASON: r[idxContactReason] || '',
+    SUB_CONTACT_REASON: r[idxSubContactReason] || '',
+    TICKET_COMMENT: r[idxComment] || '',
+    PRODUCT_NAME: r[idxProductName] || '',
+    SALES_ORDER_ID: r[idxSalesOrderId] || '',
+    WAREHOUSE: normalizeWarehouse((r[idxWh] || '').trim()),
+    DRIVER_NAME: r[idxDriverName] || '',
   }));
 }
 

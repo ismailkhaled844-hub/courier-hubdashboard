@@ -1,0 +1,167 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Tajawal:wght@300;400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 213 27% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 213 27% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 213 27% 14%;
+
+    --primary: 210 78% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 20% 94%;
+    --secondary-foreground: 213 27% 14%;
+
+    --muted: 210 15% 93%;
+    --muted-foreground: 215 14% 46%;
+
+    --accent: 168 60% 42%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 210 78% 40%;
+
+    --radius: 0.625rem;
+
+    --success: 142 60% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 210 78% 40%;
+    --info-foreground: 0 0% 100%;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', 'IBM Plex Sans Arabic', sans-serif;
+    direction: ltr;
+  }
+}
+
+@layer components {
+  .dashboard-card {
+    @apply bg-card rounded-lg border shadow-sm p-5;
+  }
+
+  .metric-card {
+    @apply bg-card rounded-lg border shadow-sm p-4 flex flex-col gap-1;
+  }
+
+  .table-header-cell {
+    @apply bg-primary text-primary-foreground text-xs font-semibold px-3 py-2 whitespace-nowrap;
+  }
+
+  .table-subheader-cell {
+    @apply bg-secondary text-secondary-foreground text-xs font-medium px-3 py-2 whitespace-nowrap;
+  }
+
+  .table-cell {
+    @apply text-xs px-3 py-2 whitespace-nowrap border-b border-border;
+  }
+
+  .table-total-row {
+    @apply bg-primary/10 font-semibold;
+  }
+
+  .tab-active {
+    @apply border-b-2 border-primary text-primary font-semibold;
+  }
+
+  .tab-inactive {
+    @apply text-muted-foreground hover:text-foreground transition-colors;
+  }
+}
+
+/* ============ Fast Icon Animations ============ */
+@keyframes icon-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.22); }
+  70% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+
+@keyframes camera-flash {
+  0%, 100% { opacity: 1; transform: scale(1); filter: drop-shadow(0 0 0px transparent); }
+  25% { opacity: 0.6; transform: scale(0.88); filter: drop-shadow(0 0 6px #10b981); }
+  60% { opacity: 1; transform: scale(1.18); filter: drop-shadow(0 0 10px #10b981); }
+  80% { transform: scale(0.96); filter: drop-shadow(0 0 4px #10b981); }
+}
+
+@keyframes fast-ping {
+  0% { transform: scale(1); opacity: 0.9; }
+  60% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+.icon-btn {
+  transition: transform 0.1s ease, background-color 0.1s ease, color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.icon-btn:hover svg {
+  animation: icon-pop 0.22s ease forwards;
+}
+
+.camera-icon-btn {
+  position: relative;
+  transition: transform 0.1s ease, background-color 0.1s ease;
+}
+
+.camera-icon-btn svg {
+  animation: camera-flash 1.6s ease-in-out infinite;
+}
+
+.camera-icon-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.3);
+  animation: fast-ping 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+/* Fast transitions for all nav/tab buttons */
+button.transition-all {
+  transition-duration: 100ms !important;
+}
+
+/* Hide Lovable "Edit with Lovable" badge */
+lovable-badge,
+[data-lovable-badge],
+#lovable-badge,
+div[class*="lovable"],
+a[href*="lovable.dev"],
+a[href*="lovable.app"][style] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
